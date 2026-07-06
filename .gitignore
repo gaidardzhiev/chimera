@@ -1,0 +1,6 @@
+src/
+build/
+sysroot/
+kernel/
+rootfs/
+image/
