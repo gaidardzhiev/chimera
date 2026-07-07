@@ -52,9 +52,11 @@ ftoolchain() {
 	cd riscv-gnu-toolchain
 	./configure \
 		--prefix="${SYSROOT}" \
-		--with-arch=rv32im \
-		--with-abi=ilp32 && \
-	make "${JOBS}" linux
+		--with-arch=rv32ima_zicsr_zifencei \
+		--with-abi=ilp32 \
+		--enable-languages=c \
+		--disable-gdb
+	make "${JOBS}"
 	printf "toolchain done\n"
 }
 
