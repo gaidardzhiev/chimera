@@ -10,7 +10,7 @@ SYSROOT="${CHIMERA}/sysroot"
 KERNEL="${CHIMERA}/kernel"
 ROOTFS="${CHIMERA}/rootfs"
 IMAGE="${CHIMERA}/image"
-TARGET="riscv32-unknown-linux-gnu"
+TARGET="riscv32-unknown-elf"
 ARCH="riscv"
 JOBS="-j$(grep -c '^processor' /proc/cpuinfo)"
 TOOLCHAIN_REPO="https://github.com/riscv-collab/riscv-gnu-toolchain"
@@ -58,6 +58,8 @@ ftoolchain() {
 		--disable-gdb
 	make "${JOBS}"
 	printf "toolchain done\n"
+	printf "add to your shell rc:\n"
+	printf "export PATH=\"%s/bin:\${PATH}\"\n" "${SYSROOT}"
 }
 
 flinux() {
