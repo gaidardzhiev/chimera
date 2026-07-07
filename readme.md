@@ -1,8 +1,8 @@
 # Chimera
 
-Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots one NOMMU RV32I Linux kernel image into shared read-only device memory and multiplexes thousands of isolated process namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own private writable memory region, its own file descriptors, and its own output buffer. The kernel and all read-only library and filesystem data are shared across every namespace simultaneously. A write to the shared region faults the offending namespace and terminates it. The others continue.
+Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots one NOMMU RV32I Linux kernel image into shared read-only device memory and multiplexes thousands of isolated process namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own private writable memory region, its own file descriptors, and its own output buffer. The kernel and all read-only library and filesystem data are shared across every namespace simultaneously. A write to the shared region faults the offending namespace and terminates it, the others continue.
 
-The result is thousands of structurally isolated Linux process environments on one GPU card, each believing it owns the machine, none of them able to affect any other, all running simultaneously in the time it takes to run one.
+The result is thousands of structurally isolated Linux process environments on one GPU card, each believing it owns the machine, none of them able to affect any other, all running simultaneously.
 
 
 ## The Problem
