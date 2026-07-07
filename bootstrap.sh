@@ -2,6 +2,8 @@
 #Copyright (C) 2026 Ivan Gaydardzhiev
 #Licensed under the GPL-3.0-only
 
+set -eu
+
 CHIMERA="${PWD}"
 SRC="${CHIMERA}/src"
 SYSROOT="${CHIMERA}/sysroot"
@@ -16,6 +18,8 @@ LINUX="6.6.35"
 BUSYBOX="1.36.1"
 LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX}.tar.gz"
 BUSYBOX_URL="https://busybox.net/downloads/busybox-${BUSYBOX}.tar.bz2"
+
+export PATH="${SYSROOT}/bin:${PATH}"
 
 fusage() {
 	printf "usage: %s <stage>\n" "${0}"
@@ -44,7 +48,7 @@ fdirs() {
 
 ftoolchain() {
 	cd "${SRC}"
-	git clone "${TOOLCHAIN_REPO}" riscv-gnu-toolchain
+	[ -d riscv-gnu-toolchain ] || git clone "${TOOLCHAIN_REPO}" riscv-gnu-toolchain
 	cd riscv-gnu-toolchain
 	./configure \
 		--prefix="${SYSROOT}" \
@@ -121,9 +125,8 @@ EOF
 fbusybox() {
 	cd "${SRC}"
 	wget "${BUSYBOX_URL}"
-	bzip2 -d busybox-"${BUSYBOX}".tar.bz2
-	tar xf busybox-"${BUSYBOX}".tar
-	rm busybox-"${BUSYBOX}".tar
+	tar xjf busybox-"${BUSYBOX}".tar.bz2
+	rm busybox-"${BUSYBOX}".tar.bz2
 	cd busybox-"${BUSYBOX}"
 	make \
 		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-" \
@@ -174,9 +177,9 @@ fsymlink() {
 	printf "symlinks ready in /usr/local/bin\n"
 }
 
-ARG="${1}"
+ARG="${1:-}"
 
-[ "${#}" -lt 1 ] && fusage
+[ -z "${ARG}" ] && fusage
 
 case "${ARG}" in
 	dirs)
