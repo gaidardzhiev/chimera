@@ -1,8 +1,8 @@
 # Chimera
 
-Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots one NOMMU RV32I Linux kernel image into shared read-only device memory and multiplexes thousands of isolated process namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own private writable memory region, its own file descriptors, and its own output buffer. The kernel and all read-only library and filesystem data are shared across every namespace simultaneously. A write to the shared region faults the offending namespace and terminates it, the others continue.
+Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots one NOMMU RV32I Linux kernel image into shared read-only device memory and multiplexes thousands of isolated process namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own private writable memory region, its own file descriptors, and its own output buffer. The kernel and all read-only library and filesystem data are shared across every namespace simultaneously. A write to the shared region faults the offending namespace and terminates it. The others continue.
 
-The result is thousands of structurally isolated Linux process environments on one GPU card, each believing it owns the machine, none of them able to affect any other, all running simultaneously.
+The result is thousands of structurally isolated Linux process environments on one GPU card, each believing it owns the machine, none of them able to affect any other, all running simultaneously in the time it takes to run one.
 
 
 ## The Problem
@@ -18,7 +18,7 @@ Chimera approaches the problem differently. The isolation boundary is the emulat
 
 VRAM is divided into two regions before the kernel launches.
 
-The shared region holds the kernel image, the root filesystem, and all read-only library data. It is written once by the host before the kernel launches and never modified again. Every thread reads from it freely. A 64MB shared region is sufficient for a minimal NOMMU Linux with busybox and uclibc.
+The shared region holds the kernel text section, the root filesystem, and all read-only library data. The kernel text is the executable code only. The kernel data, bss, and init sections are writable and live in each namespace's private slice alongside the process memory. A Linux kernel writes into its own data sections during initialization, patches alternatives, and initializes global structures. None of that touches the text section, which is genuinely read-only after the image is built. The shared region is written once by the host before the kernel launches and never modified again. Every thread reads from it freely. A 64MB shared region is sufficient for a minimal NOMMU Linux with busybox and uclibc.
 
 The private region is partitioned into per-thread slices. Each slice holds the complete mutable state of one namespace: the register file, the CSR set, the stack, the heap arena, the file descriptor table, and the output buffer. The slice size is a compile-time constant. On an RTX 3060 Ti with 8GB VRAM, after reserving the shared region, approximately 7.9GB remains for private slices. At 2MB per slice, nearly 4000 namespaces fit. At 1MB, close to 8000.
 
@@ -123,4 +123,4 @@ The reference hardware is an RTX 3060 Ti: 38 streaming multiprocessors, 1536 thr
 
 ## License
 
-This project is provided under the [GPL3 License](./COPYING) Copyright (C) 2026 Ivan Gaydardzhiev
+Copyright (C) 2026 Ivan Gaydardzhiev. Licensed under GPL-3.0-only.
