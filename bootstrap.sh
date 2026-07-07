@@ -4,25 +4,16 @@
 
 CHIMERA="${PWD}"
 SRC="${CHIMERA}/src"
-BUILD="${CHIMERA}/build"
 SYSROOT="${CHIMERA}/sysroot"
 KERNEL="${CHIMERA}/kernel"
 ROOTFS="${CHIMERA}/rootfs"
 IMAGE="${CHIMERA}/image"
-
-TARGET="riscv32-unknown-linux-uclibc"
+TARGET="riscv32-unknown-linux-gnu"
 ARCH="riscv"
 JOBS="-j$(grep -c '^processor' /proc/cpuinfo)"
-
-BINUTILS="2.42"
-GCC="13.3.0"
-UCLIBC="1.0.47"
+TOOLCHAIN_REPO="https://github.com/riscv-collab/riscv-gnu-toolchain"
 LINUX="6.6.35"
 BUSYBOX="1.36.1"
-
-BINUTILS_URL="https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS}.tar.gz"
-GCC_URL="https://ftp.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.gz"
-UCLIBC_URL="https://downloads.uclibc-ng.org/releases/${UCLIBC}/uClibc-ng-${UCLIBC}.tar.gz"
 LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX}.tar.gz"
 BUSYBOX_URL="https://busybox.net/downloads/busybox-${BUSYBOX}.tar.bz2"
 
@@ -30,15 +21,13 @@ fusage() {
 	printf "usage: %s <stage>\n" "${0}"
 	printf "\n"
 	printf "stages:\n"
-	printf "	all | dirs | binutils | gcc-bootstrap | uclibc | gcc-final | linux | busybox | image\n"
+	printf "	all | dirs | toolchain | linux | busybox | image | symlink\n"
 	exit 1
 }
 
 fdirs() {
-	rm -rf "${BUILD}"
 	mkdir -p \
 		"${SRC}" \
-		"${BUILD}" \
 		"${SYSROOT}" \
 		"${KERNEL}" \
 		"${ROOTFS}" \
@@ -53,117 +42,16 @@ fdirs() {
 	printf "dirs ready: %s\n" "${CHIMERA}"
 }
 
-fbinutils() {
+ftoolchain() {
 	cd "${SRC}"
-	wget "${BINUTILS_URL}"
-	tar xf binutils-"${BINUTILS}".tar.gz
-	rm binutils-"${BINUTILS}".tar.gz
-	mkdir -p "${BUILD}/binutils"
-	cd "${BUILD}/binutils"
-	"${SRC}/binutils-${BINUTILS}/configure" \
+	git clone "${TOOLCHAIN_REPO}" riscv-gnu-toolchain
+	cd riscv-gnu-toolchain
+	./configure \
 		--prefix="${SYSROOT}" \
-		--target="${TARGET}" \
-		--with-sysroot="${SYSROOT}/${TARGET}" \
-		--disable-nls \
-		--disable-multilib \
-		--disable-werror && \
-	make "${JOBS}" && \
-	make install
-	rm -rf "${BUILD}/binutils"
-	printf "binutils %s done\n" "${BINUTILS}"
-}
-
-fgcc_bootstrap() {
-	cd "${SRC}"
-	wget "${GCC_URL}"
-	tar xf gcc-"${GCC}".tar.gz
-	rm gcc-"${GCC}".tar.gz
-	cd gcc-"${GCC}"
-	./contrib/download_prerequisites
-	mkdir -p "${BUILD}/gcc-bootstrap"
-	cd "${BUILD}/gcc-bootstrap"
-	"${SRC}/gcc-${GCC}/configure" \
-		--prefix="${SYSROOT}" \
-		--target="${TARGET}" \
 		--with-arch=rv32im \
-		--with-abi=ilp32 \
-		--without-headers \
-		--with-newlib \
-		--with-gnu-as \
-		--with-gnu-ld \
-		--disable-nls \
-		--disable-multilib \
-		--disable-shared \
-		--disable-threads \
-		--disable-libssp \
-		--disable-libgomp \
-		--disable-libmudflap \
-		--enable-languages=c && \
-	make "${JOBS}" all-gcc && \
-	make "${JOBS}" all-target-libgcc && \
-	make install-gcc && \
-	make install-target-libgcc
-	rm -rf "${BUILD}/gcc-bootstrap"
-	printf "gcc bootstrap %s done\n" "${GCC}"
-}
-
-fuclibc() {
-	cd "${SRC}"
-	wget "${UCLIBC_URL}"
-	tar xf uClibc-ng-"${UCLIBC}".tar.gz
-	rm uClibc-ng-"${UCLIBC}".tar.gz
-	cd uClibc-ng-"${UCLIBC}"
-	cat > .config << 'EOF'
-CROSS_COMPILER_PREFIX="riscv32-unknown-linux-uclibc-"
-KERNEL_HEADERS="/home/chimera/sysroot/riscv32-unknown-linux-uclibc/include"
-TARGET_ARCH="riscv"
-CONFIG_RV32=y
-ARCH_LITTLE_ENDIAN=y
-ARCH_WANTS_LITTLE_ENDIAN=y
-HAVE_NO_MMU=y
-UCLIBC_HAS_FLOATS=y
-UCLIBC_HAS_FPU=n
-DO_C99_MATH=y
-UCLIBC_HAS_THREADS=y
-LINUXTHREADS_OLD=y
-UCLIBC_HAS_LOCALE=n
-UCLIBC_HAS_WCHAR=n
-UCLIBC_HAS_GLIBC_CUSTOM_PRINTF=n
-UCLIBC_HAS_STDIO_FUTEXES=n
-DEVEL_PREFIX="/usr"
-RUNTIME_PREFIX="/"
-EOF
-	sed -i "s|/home/chimera|${CHIMERA}|g" .config
-	make "${JOBS}" \
-		CROSS="${SYSROOT}/bin/${TARGET}-" \
-		PREFIX="${SYSROOT}/${TARGET}" \
-		DEVEL_PREFIX="/usr" \
-		RUNTIME_PREFIX="/" \
-		install
-	rm -rf "${SRC}/uClibc-ng-${UCLIBC}"
-	printf "uclibc-ng %s done\n" "${UCLIBC}"
-}
-
-fgcc_final() {
-	mkdir -p "${BUILD}/gcc-final"
-	cd "${BUILD}/gcc-final"
-	"${SRC}/gcc-${GCC}/configure" \
-		--prefix="${SYSROOT}" \
-		--target="${TARGET}" \
-		--with-arch=rv32im \
-		--with-abi=ilp32 \
-		--with-sysroot="${SYSROOT}/${TARGET}" \
-		--with-gnu-as \
-		--with-gnu-ld \
-		--disable-nls \
-		--disable-multilib \
-		--disable-libssp \
-		--enable-threads \
-		--enable-languages=c && \
-	make "${JOBS}" && \
-	make install
-	rm -rf "${BUILD}/gcc-final"
-	printf "gcc final %s done\n" "${GCC}"
+		--with-abi=ilp32 && \
+	make "${JOBS}" linux
+	printf "toolchain done\n"
 }
 
 flinux() {
@@ -172,6 +60,7 @@ flinux() {
 	tar xf linux-"${LINUX}".tar.gz
 	rm linux-"${LINUX}".tar.gz
 	cp -r linux-"${LINUX}" "${KERNEL}/linux-${LINUX}"
+	rm -rf linux-"${LINUX}"
 	cd "${KERNEL}/linux-${LINUX}"
 	cat > arch/riscv/configs/chimera_defconfig << 'EOF'
 CONFIG_RISCV=y
@@ -252,6 +141,7 @@ fbusybox() {
 }
 
 fimage() {
+	mkdir -p "${ROOTFS}/etc/init.d"
 	cat > "${ROOTFS}/etc/inittab" << 'EOF'
 ::sysinit:/etc/init.d/rcS
 ::respawn:/bin/sh
@@ -259,7 +149,6 @@ fimage() {
 ::shutdown:/sbin/swapoff -a
 ::shutdown:/bin/umount -a -r
 EOF
-	mkdir -p "${ROOTFS}/etc/init.d"
 	cat > "${ROOTFS}/etc/init.d/rcS" << 'EOF'
 #!/bin/sh
 mount -t proc proc /proc
@@ -274,6 +163,17 @@ EOF
 	ls -lh "${IMAGE}"
 }
 
+fsymlink() {
+	ln -sf "${SYSROOT}/bin/${TARGET}-gcc" /usr/local/bin/riscv32-gcc
+	ln -sf "${SYSROOT}/bin/${TARGET}-as" /usr/local/bin/riscv32-as
+	ln -sf "${SYSROOT}/bin/${TARGET}-ld" /usr/local/bin/riscv32-ld
+	ln -sf "${SYSROOT}/bin/${TARGET}-objdump" /usr/local/bin/riscv32-objdump
+	ln -sf "${SYSROOT}/bin/${TARGET}-objcopy" /usr/local/bin/riscv32-objcopy
+	ln -sf "${SYSROOT}/bin/${TARGET}-strip" /usr/local/bin/riscv32-strip
+	ln -sf "${SYSROOT}/bin/${TARGET}-readelf" /usr/local/bin/riscv32-readelf
+	printf "symlinks ready in /usr/local/bin\n"
+}
+
 ARG="${1}"
 
 [ "${#}" -lt 1 ] && fusage
@@ -282,17 +182,8 @@ case "${ARG}" in
 	dirs)
 		fdirs
 		;;
-	binutils)
-		fbinutils
-		;;
-	gcc-bootstrap)
-		fgcc_bootstrap
-		;;
-	uclibc)
-		fuclibc
-		;;
-	gcc-final)
-		fgcc_final
+	toolchain)
+		ftoolchain
 		;;
 	linux)
 		flinux
@@ -303,15 +194,16 @@ case "${ARG}" in
 	image)
 		fimage
 		;;
+	symlink)
+		fsymlink
+		;;
 	all)
 		fdirs && \
-		fbinutils && \
-		fgcc_bootstrap && \
-		fuclibc && \
-		fgcc_final && \
+		ftoolchain && \
 		flinux && \
 		fbusybox && \
-		fimage
+		fimage && \
+		fsymlink
 		;;
 	*)
 		printf "unsupported stage: %s\n" "${ARG}"
