@@ -7,7 +7,7 @@ LDFLAGS=-T link.ld -m elf32lriscv
 QEMU=qemu-system-riscv32
 QFLAGS=-machine virt -nographic -bios none -kernel
 
-all: uart.elf clint.elf
+all: uart.elf clint.elf uart_echo.elf
 
 uart.elf: uart.o
 	$(LD) $(LDFLAGS) -o $@ $<
@@ -21,11 +21,20 @@ clint.elf: clint.o
 clint.o: clint.s
 	$(AS) $(ASFLAGS) -o $@ $<
 
+uart_echo.elf: uart_echo.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+uart_echo.o: uart_echo.s
+	$(AS) $(ASFLAGS) -o $@ $<
+
 qemu-uart: uart.elf
 	$(QEMU) $(QFLAGS) uart.elf
 
 qemu-clint: clint.elf
 	$(QEMU) $(QFLAGS) clint.elf
+
+qemu-uart-echo: uart_echo.elf
+	$(QEMU) $(QFLAGS) uart_echo.elf
 
 clean:
 	rm -f *.o *.elf
