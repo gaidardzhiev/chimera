@@ -5,6 +5,7 @@ This document describes the repository structure, how to build, and the current 
 
 ## Repository layout
 
+```
 chimera/
     [readme.md](./readme.md) - project overview and architecture
     [hacking.md](./hacking.md) - this file
@@ -18,6 +19,7 @@ chimera/
         [uart.s](tests/uart.s) - stage one: UART transmit test
         [clint.s](tests/clint.s) - stage two: CLINT timer interrupt test
         [uart_echo.s](tests/uart_echo.s) - stage three: UART receive and echo test
+```
 
 ## Building the toolchain
 
@@ -100,7 +102,7 @@ Timer and interrupt: timer_tick advances mtime by TIMER_QUANTUM on every fetch i
 
 CSR access: csr_read and csr_write centralize all CSR access covering mstatus, mie, mip, mtvec, mscratch, mepc, and mcause.
 
-Fetch fecode execute: this is the main decode loop, that fetches one instruction, decodes the fixed RV32I fields, dispatches on opcode. Implements the full RV32I base ISA and the complete M extension.
+Fetch decode execute: this is the main decode loop, that fetches one instruction, decodes the fixed RV32I fields, dispatches on opcode. Implements the full RV32I base ISA and the complete M extension.
 
 Chimera kernel: The CUDA device kernel. One thread per namespace. Initializes pc to ENTRY_POINT and runs the fetch loop until the done flag is set.
 
