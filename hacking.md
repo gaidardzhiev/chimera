@@ -5,21 +5,19 @@ This document describes the repository structure, how to build, and the current 
 
 ## Repository layout
 
-```
-chimera/
-    [readme.md](./readme.md) - project overview and architecture
-    [hacking.md](./hacking.md) - this file
-    [bootstrap.sh](./bootstrap.sh) - builds the cross toolchain and kernel image
-    [chimera.cu](./chimera.cu) - the CUDA emulator kernel and host driver
-    [Makefile](./Makefile) - builds chimera from chimera.cu via nvcc
-    [.gitignore](./.gitignore) - excludes all bootstrap build artifacts
-    tests/
-        [Makefile](tests/Makefile) - builds and runs the bare-metal test programs
-        [link.ld](tests/link.ld) - flat linker script, entry at 0x80000000
-        [uart.s](tests/uart.s) - stage one: UART transmit test
-        [clint.s](tests/clint.s) - stage two: CLINT timer interrupt test
-        [uart_echo.s](tests/uart_echo.s) - stage three: UART receive and echo test
-```
+- chimera/
+ - [readme.md](./readme.md) project overview and architecture
+ - [hacking.md](./hacking.md) this file
+ - [bootstrap.sh](./bootstrap.sh) builds the cross toolchain and kernel image
+ - [chimera.cu](./chimera.cu) the CUDA emulator kernel and host driver
+ - [Makefile](./Makefile) builds chimera from chimera.cu via nvcc
+ - [.gitignore](./.gitignore) excludes all bootstrap build artifacts
+ - tests/
+   - [Makefile](tests/Makefile) builds and runs the bare-metal test programs
+   - [link.ld](tests/link.ld) flat linker script, entry at 0x80000000
+   - [uart.s](tests/uart.s) stage one: UART transmit test
+   - [clint.s](tests/clint.s) stage two: CLINT timer interrupt test
+   - [uart_echo.s](tests/uart_echo.s) stage three: UART receive and echo test
 
 ## Building the toolchain
 
