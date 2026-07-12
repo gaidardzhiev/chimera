@@ -64,6 +64,30 @@ riscv32-unknown-elf-objcopy -O binary tests/uart.elf uart.bin
 
 A correct run prints chimera once. With N=4000 it prints chimera four thousand times.
 
+## Benchmarks
+
+The following measurements were taken on the reference hardware, an RTX 3060 Ti with 8GB GDDR6 VRAM. The binary under test is uart.bin, the flat binary produced from tests/uart.s via objcopy. It prints the string "chimera" to the NS16550 UART and exits. This is a bare-metal program with no Linux kernel involved. It exercises the RV32I decode loop, the UART transmit path, and the namespace isolation mechanism, nothing more.
+
+```
+for n in 1 10 100 500 1000 2000 3000; do
+    /usr/bin/time -f "$n namespaces: %e seconds, %M KiB host RAM" \
+        ./chimera uart.bin "$n" >/dev/null
+done
+```
+
+```
+1    namespaces:  0.31 seconds,  101996 KiB host RAM
+10   namespaces:  0.28 seconds,  121784 KiB host RAM
+100  namespaces:  0.64 seconds,  317572 KiB host RAM
+500  namespaces:  2.47 seconds, 1187976 KiB host RAM
+1000 namespaces:  4.32 seconds, 2276144 KiB host RAM
+2000 namespaces:  8.65 seconds, 4452340 KiB host RAM
+3000 namespaces: 12.66 seconds, 6628436 KiB host RAM
+```
+
+Scaling is linear. From 1000 to 2000 namespaces time doubles from 4.32 to 8.65 seconds. From 2000 to 3000 it adds the same 4.3 seconds again. Host RAM scales proportionally at approximately 2.2MB per namespace, consistent with the configured SLICE_SIZE. No serialization points between namespaces are visible in the data.
+
+These numbers do not represent Linux namespace performance. They represent the emulator core under a minimal bare-metal workload. Linux kernel boot and the full namespace stack are not yet implemented. The linear scaling result confirms the architectural property that matters before that work begins: namespaces are independent and the GPU scheduler handles them without contention.
 
 ## Building and running the tests
 
