@@ -7,10 +7,12 @@ set -eu
 CHIMERA="${PWD}"
 SRC="${CHIMERA}/src"
 SYSROOT="${CHIMERA}/sysroot"
+SYSROOT_LINUX="${CHIMERA}/sysroot-linux"
 KERNEL="${CHIMERA}/kernel"
 ROOTFS="${CHIMERA}/rootfs"
 IMAGE="${CHIMERA}/image"
 TARGET="riscv32-unknown-elf"
+TARGET_LINUX="riscv32-unknown-linux-gnu"
 ARCH="riscv"
 JOBS="-j$(grep -c '^processor' /proc/cpuinfo)"
 TOOLCHAIN_REPO="https://github.com/riscv-collab/riscv-gnu-toolchain"
@@ -19,13 +21,13 @@ BUSYBOX="1.36.1"
 LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX}.tar.gz"
 BUSYBOX_URL="https://busybox.net/downloads/busybox-${BUSYBOX}.tar.bz2"
 
-export PATH="${SYSROOT}/bin:${PATH}"
+export PATH="${SYSROOT}/bin:${SYSROOT_LINUX}/bin:${PATH}"
 
 fusage() {
 	printf "usage: %s <stage>\n" "${0}"
 	printf "\n"
 	printf "stages:\n"
-	printf "	all | dirs | toolchain | linux | busybox | image | symlink\n"
+	printf "	all | dirs | toolchain | toolchain-linux | linux | busybox | image | symlink\n"
 	exit 1
 }
 
@@ -33,6 +35,7 @@ fdirs() {
 	mkdir -p \
 		"${SRC}" \
 		"${SYSROOT}" \
+		"${SYSROOT_LINUX}" \
 		"${KERNEL}" \
 		"${ROOTFS}" \
 		"${ROOTFS}/bin" \
@@ -60,6 +63,20 @@ ftoolchain() {
 	printf "toolchain done\n"
 	printf "add to your shell rc:\n"
 	printf "export PATH=\"%s/bin:\${PATH}\"\n" "${SYSROOT}"
+}
+
+ftoolchain_linux() {
+	cd "${SRC}/riscv-gnu-toolchain"
+	./configure \
+		--prefix="${SYSROOT_LINUX}" \
+		--with-arch=rv32ima \
+		--with-abi=ilp32 \
+		--enable-languages=c \
+		--disable-gdb
+	make "${JOBS}" linux
+	printf "linux toolchain done\n"
+	printf "add to your shell rc:\n"
+	printf "export PATH=\"%s/bin:\${PATH}\"\n" "${SYSROOT_LINUX}"
 }
 
 flinux() {
@@ -117,11 +134,11 @@ CONFIG_DEFAULT_HOSTNAME="chimera"
 EOF
 	make \
 		ARCH="${ARCH}" \
-		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-" \
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
 		chimera_defconfig && \
 	make "${JOBS}" \
 		ARCH="${ARCH}" \
-		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-"
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-"
 	cp arch/riscv/boot/Image "${IMAGE}/kernel.bin"
 	printf "linux %s done\n" "${LINUX}"
 }
@@ -133,15 +150,15 @@ fbusybox() {
 	rm busybox-"${BUSYBOX}".tar.bz2
 	cd busybox-"${BUSYBOX}"
 	make \
-		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-" \
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
 		defconfig
 	sed -i \
 		's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
 		.config
 	make "${JOBS}" \
-		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-" && \
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" && \
 	make \
-		CROSS_COMPILE="${SYSROOT}/bin/${TARGET}-" \
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
 		CONFIG_PREFIX="${ROOTFS}" \
 		install
 	printf "busybox %s done\n" "${BUSYBOX}"
@@ -192,6 +209,9 @@ case "${ARG}" in
 	toolchain)
 		ftoolchain
 		;;
+	toolchain-linux)
+		ftoolchain_linux
+		;;
 	linux)
 		flinux
 		;;
@@ -207,6 +227,7 @@ case "${ARG}" in
 	all)
 		fdirs && \
 		ftoolchain && \
+		ftoolchain_linux && \
 		flinux && \
 		fbusybox && \
 		fimage && \
