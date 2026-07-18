@@ -19,19 +19,69 @@ This document describes the repository structure, how to build, and the current 
    - [clint.s](tests/clint.s) stage two: CLINT timer interrupt test
    - [uart_echo.s](tests/uart_echo.s) stage three: UART receive and echo test
 
+
 ## Building the toolchain
 
-The bootstrap script builds the riscv32-unknown-elf cross toolchain from the riscv-gnu-toolchain repository. Run it from the project root.
+The bootstrap script builds two toolchains from the riscv-gnu-toolchain repository. Run all stages from the project root.
 
 ```sh
 ./bootstrap.sh dirs
+./bootstrap.sh toolchain
+./bootstrap.sh toolchain-linux
 ```
+
+The bare-metal toolchain installs into sysroot/bin and produces riscv32-unknown-elf-gcc. It is used to build the tests directory programs. The Linux toolchain installs into sysroot-linux/bin and produces riscv32-unknown-linux-gnu-gcc. It is used to build the kernel and busybox.
+
+The bare-metal toolchain is configured with rv32ima_zicsr_zifencei and ilp32 ABI. The Linux toolchain is configured with rv32ima and ilp32 ABI. glibc requires plain rv32ima and does not accept the extended extension string.
+
+After each build completes the script prints the PATH export line to add to your shell rc. Both sysroot/bin and sysroot-linux/bin must be in PATH for the linux and busybox stages to work.
+
+The toolchain-linux stage reconfigures the existing riscv-gnu-toolchain clone and runs make linux. It does not re-clone. Run toolchain first, then toolchain-linux.
+
+
+## Building the Linux kernel
+
+The kernel build uses the Linux toolchain. Download Linux 6.6.35 and extract it into the kernel directory:
 
 ```sh
-./bootstrap.sh toolchain
+cd src
+wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz
+tar xf linux-6.6.35.tar.gz
+cp -r linux-6.6.35 ../kernel/linux-6.6.35
+rm -rf linux-6.6.35 linux-6.6.35.tar.gz
+cd ../kernel/linux-6.6.35
 ```
 
-The toolchain installs into sysroot/bin. After the build completes the script prints the PATH export line to add to your shell rc. All subsequent stages depend on the cross toolchain being in PATH. The full chain including the Linux kernel image and busybox rootfs is not yet built. Those stages exist in the script but depend on a Linux-capable toolchain that will be added in a future bootstrap stage.
+Start from the nommu_virt_defconfig which ships with the kernel and is designed for the QEMU virt machine with NOMMU RV32:
+
+```sh
+make ARCH=riscv CROSS_COMPILE=riscv32-unknown-linux-gnu- nommu_virt_defconfig
+```
+
+The defconfig sets CONFIG_RISCV_M_MODE=y which is correct for Chimera. The kernel runs directly in M-mode with no SBI firmware underneath it. Do not change this to S-mode.
+
+Build the kernel:
+
+```sh
+make ARCH=riscv CROSS_COMPILE=riscv32-unknown-linux-gnu- -j4
+```
+
+The output is arch/riscv/boot/Image and arch/riscv/boot/Image.gz. Use the uncompressed Image with QEMU.
+
+To verify the kernel executes correctly use the instruction trace flag:
+
+```sh
+qemu-system-riscv32 -machine virt -nographic \
+    -bios none \
+    -kernel arch/riscv/boot/Image \
+    -m 128M \
+    -append "earlycon console=ttyS0" \
+    -d in_asm 2>&1 | head -50
+```
+
+Correct output shows the reset ROM at 0x1000 jumping to 0x80000000 and the kernel clearing registers. The kernel is executing even if no console output appears on the terminal.
+
+Note on OpenSBI: the virt machine's bundled OpenSBI at /usr/share/qemu/opensbi-riscv32-generic-fw_dynamic.bin occupies 0x80000000 and jumps to 0x80400000 in S-mode. A CONFIG_RISCV_M_MODE kernel links at 0x80000000 and expects M-mode. These are incompatible. Do not use OpenSBI with the Chimera kernel config. Use -bios none.
 
 
 ## Building the emulator
@@ -64,11 +114,12 @@ riscv32-unknown-elf-objcopy -O binary tests/uart.elf uart.bin
 
 A correct run prints chimera once. With N=4000 it prints chimera four thousand times.
 
+
 ## Benchmarks
 
 The following measurements were taken on the reference hardware, an RTX 3060 Ti with 8GB GDDR6 VRAM. The binary under test is uart.bin, the flat binary produced from tests/uart.s via objcopy. It prints the string "chimera" to the NS16550 UART and exits. This is a bare-metal program with no Linux kernel involved. It exercises the RV32I decode loop, the UART transmit path, and the namespace isolation mechanism, nothing more.
 
-```
+```sh
 for n in 1 10 100 500 1000 2000 3000; do
     /usr/bin/time -f "$n namespaces: %e seconds, %M KiB host RAM" \
         ./chimera uart.bin "$n" >/dev/null
@@ -89,6 +140,7 @@ Scaling is linear. From 1000 to 2000 namespaces time doubles from 4.32 to 8.65 s
 
 These numbers do not represent Linux namespace performance. They represent the emulator core under a minimal bare-metal workload. Linux kernel boot and the full namespace stack are not yet implemented. The linear scaling result confirms the architectural property that matters before that work begins: namespaces are independent and the GPU scheduler handles them without contention.
 
+
 ## Building and running the tests
 
 The tests directory contains three bare-metal RV32I programs that verify the emulator and the toolchain independently of the Linux kernel. They run under qemu-system-riscv32 against the virt machine, which uses the same UART and CLINT addresses as Chimera.
@@ -101,11 +153,12 @@ make
 Build targets produce .elf files. Run targets launch QEMU.
 
 ```sh
-make qemu-uart      #prints chimera and exits
-make qemu-clint     #prints tick repeatedly on each timer interrupt
-make qemu-uart-echo  #prints chimera uart echo ready then echoes input
+make qemu-uart       # prints chimera and exits
+make qemu-clint      # prints tick repeatedly on each timer interrupt
+make qemu-uart-echo  # prints chimera uart echo ready then echoes input
 ```
-**Exit QEMU with Ctrl-A X.**
+
+Exit QEMU with Ctrl-A X.
 
 The same binaries converted to flat format with objcopy are the first inputs to the CUDA emulator. A binary that produces correct output under QEMU and incorrect output under Chimera indicates a bug in the emulator.
 
@@ -135,4 +188,4 @@ Host driver: main loads the flat binary into the shared region, allocates and in
 
 The RV32I base integer ISA is fully implemented. The M extension is fully implemented. The A extension atomics are stubbed in opcode 0x2f with a non-atomic load-store pair sufficient for single-threaded use. CSR access covers the M-mode registers required for interrupt handling. The UART transmit and receive paths are implemented. The CLINT timer is implemented. The virtio-net NIC controller is not yet implemented, the MMIO range returns zero on read and discards writes.
 
-The Linux kernel build stage is not yet complete. The current toolchain is bare-metal ELF. A Linux-capable glibc toolchain will be added to bootstrap.sh when the emulator is verified correct against the bare-metal test suite.
+The bare-metal ELF toolchain is built and verified. The Linux glibc toolchain is built and verified. The Linux 6.6.35 kernel builds correctly with nommu_virt_defconfig using riscv32-unknown-linux-gnu-gcc. The kernel executes under QEMU confirmed via instruction trace showing the reset ROM at 0x1000 jumping to 0x80000000 and the kernel initializing. Console output from the kernel under QEMU is not yet resolved, the kernel runs but produces no terminal output. This is a QEMU invocation issue under investigation, not a kernel or emulator bug. The bootstrap.sh linux stage has not yet been reconciled with the manual build process and should not be used until it is updated.
