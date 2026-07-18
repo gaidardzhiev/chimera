@@ -38,50 +38,126 @@ After each build completes the script prints the PATH export line to add to your
 
 The toolchain-linux stage reconfigures the existing riscv-gnu-toolchain clone and runs make linux. It does not re-clone. Run toolchain first, then toolchain-linux.
 
+## Building the Linux test kernel
 
-## Building the Linux kernel
-
-The kernel build uses the Linux toolchain. Download Linux 6.6.35 and extract it into the kernel directory:
+The kernel build uses the Linux cross toolchain. Download Linux 6.6.35 and extract it into the kernel directory:
 
 ```sh
+mkdir -p kernel
+
 cd src
-wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz
-tar xf linux-6.6.35.tar.gz
-cp -r linux-6.6.35 ../kernel/linux-6.6.35
-rm -rf linux-6.6.35 linux-6.6.35.tar.gz
+
+wget -c \
+    https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz
+
+tar -xzf linux-6.6.35.tar.gz -C ../kernel
+rm linux-6.6.35.tar.gz
+
 cd ../kernel/linux-6.6.35
 ```
 
-Start from the nommu_virt_defconfig which ships with the kernel and is designed for the QEMU virt machine with NOMMU RV32:
+Configure the kernel for RV32, NOMMU, and the QEMU `virt` machine:
 
 ```sh
-make ARCH=riscv CROSS_COMPILE=riscv32-unknown-linux-gnu- nommu_virt_defconfig
+export ARCH=riscv
+export CROSS_COMPILE=riscv32-unknown-linux-gnu-
+
+make mrproper
+make rv32_nommu_virt_defconfig
 ```
 
-The defconfig sets CONFIG_RISCV_M_MODE=y which is correct for Chimera. The kernel runs directly in M-mode with no SBI firmware underneath it. Do not change this to S-mode.
+Use `rv32_nommu_virt_defconfig`, not `nommu_virt_defconfig`. The RV32 target combines the NOMMU virtual-machine configuration with the required 32-bit RISC-V configuration.
 
-Build the kernel:
+Verify the important settings:
 
 ```sh
-make ARCH=riscv CROSS_COMPILE=riscv32-unknown-linux-gnu- -j4
+grep -E \
+'CONFIG_ARCH_RV32I|CONFIG_32BIT|CONFIG_64BIT|CONFIG_MMU|CONFIG_RISCV_M_MODE|CONFIG_RISCV_SBI' \
+.config
 ```
 
-The output is arch/riscv/boot/Image and arch/riscv/boot/Image.gz. Use the uncompressed Image with QEMU.
+The configuration must include:
 
-To verify the kernel executes correctly use the instruction trace flag:
+```
+CONFIG_32BIT=y
+CONFIG_ARCH_RV32I=y
+CONFIG_RISCV_M_MODE=y
+# CONFIG_MMU is not set
+```
+
+`CONFIG_RISCV_M_MODE=y` is correct. The kernel executes directly in machine mode and does not use SBI firmware.
+
+Build the uncompressed kernel image:
 
 ```sh
-qemu-system-riscv32 -machine virt -nographic \
+make -j4 Image
+```
+
+The output is:
+
+```
+arch/riscv/boot/Image
+```
+
+Verify the linked entry address before running QEMU:
+
+```sh
+riscv32-unknown-linux-gnu-readelf -h vmlinux |
+    grep 'Entry point address'
+
+riscv32-unknown-linux-gnu-nm -n vmlinux |
+    grep -E ' [Tt] _start$'
+```
+
+Expected output:
+
+```
+Entry point address:               0x80000000
+80000000 T _start
+```
+
+The QEMU `virt` machine places RAM at `0x80000000`. An RV32 M-mode NOMMU kernel has a zero image offset and therefore starts at the beginning of RAM.
+
+Test the kernel:
+
+```sh
+rm -f qemu-in_asm.log
+
+timeout 3s qemu-system-riscv32 \
+    -machine virt \
+    -cpu rv32 \
+    -smp 1 \
+    -m 128M \
+    -nographic \
     -bios none \
     -kernel arch/riscv/boot/Image \
-    -m 128M \
-    -append "earlycon console=ttyS0" \
-    -d in_asm 2>&1 | head -50
+    -d in_asm,guest_errors \
+    -D qemu-in_asm.log
 ```
 
-Correct output shows the reset ROM at 0x1000 jumping to 0x80000000 and the kernel clearing registers. The kernel is executing even if no console output appears on the terminal.
+The kernel should initialize the CPU, memory allocator, interrupt controller, CLINT timer, and UART. A successful test reaches the root filesystem stage and ends with:
 
-Note on OpenSBI: the virt machine's bundled OpenSBI at /usr/share/qemu/opensbi-riscv32-generic-fw_dynamic.bin occupies 0x80000000 and jumps to 0x80400000 in S-mode. A CONFIG_RISCV_M_MODE kernel links at 0x80000000 and expects M-mode. These are incompatible. Do not use OpenSBI with the Chimera kernel config. Use -bios none.
+```
+VFS: Cannot open root device "/dev/vda"
+Kernel panic - not syncing: VFS: Unable to mount root fs
+```
+
+This panic is expected. No virtual block device or root filesystem was supplied to QEMU. It confirms that the kernel was loaded at `0x80000000`, entered in M-mode, initialized the QEMU `virt` machine, and reached PID 1 startup.
+
+The fixed boot addresses are:
+
+```
+QEMU reset ROM       0x00001000
+QEMU RAM base        0x80000000
+Linux image load     0x80000000
+Linux entry point    0x80000000
+```
+
+Do not use OpenSBI for this kernel. OpenSBI occupies the beginning of RAM and normally starts an S-mode kernel at a different address. The Chimera test kernel is an M-mode kernel and must be started with:
+
+```
+-bios none
+```
 
 
 ## Building the emulator
