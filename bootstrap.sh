@@ -8,14 +8,19 @@ CHIMERA="${PWD}"
 SRC="${CHIMERA}/src"
 SYSROOT="${CHIMERA}/sysroot"
 SYSROOT_LINUX="${CHIMERA}/sysroot-linux"
+BUILDROOT_OUTPUT="${CHIMERA}/buildroot-nommu"
+SYSROOT_NOMMU="${BUILDROOT_OUTPUT}/host"
 KERNEL="${CHIMERA}/kernel"
 ROOTFS="${CHIMERA}/rootfs"
 IMAGE="${CHIMERA}/image"
 TARGET="riscv32-unknown-elf"
 TARGET_LINUX="riscv32-unknown-linux-gnu"
+TARGET_NOMMU="riscv32-buildroot-linux-uclibc"
 ARCH="riscv"
 JOBS="-j$(grep -c '^processor' /proc/cpuinfo)"
 TOOLCHAIN_REPO="https://github.com/riscv-collab/riscv-gnu-toolchain"
+BUILDROOT="2025.02.15"
+BUILDROOT_URL="https://buildroot.org/downloads/buildroot-${BUILDROOT}.tar.xz"
 LINUX="6.6.35"
 BUSYBOX="1.36.1"
 LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX}.tar.gz"
@@ -27,7 +32,7 @@ fusage() {
 	printf "usage: %s <stage>\n" "${0}"
 	printf "\n"
 	printf "stages:\n"
-	printf "	all | dirs | toolchain | toolchain-linux | linux | busybox | image | symlink\n"
+	printf "\tall | dirs | toolchain | toolchain-linux | toolchain-nommu | linux | busybox | image | symlink\n"
 	exit 1
 }
 
@@ -36,6 +41,7 @@ fdirs() {
 		"${SRC}" \
 		"${SYSROOT}" \
 		"${SYSROOT_LINUX}" \
+		"${BUILDROOT_OUTPUT}" \
 		"${KERNEL}" \
 		"${ROOTFS}" \
 		"${ROOTFS}/bin" \
@@ -77,6 +83,40 @@ ftoolchain_linux() {
 	printf "linux toolchain done\n"
 	printf "add to your shell rc:\n"
 	printf "export PATH=\"%s/bin:\${PATH}\"\n" "${SYSROOT_LINUX}"
+}
+
+ftoolchain_nommu() {
+	cd "${SRC}"
+	[ -f buildroot-"${BUILDROOT}".tar.xz ] || wget "${BUILDROOT_URL}"
+	[ -d buildroot-"${BUILDROOT}" ] || tar xJf buildroot-"${BUILDROOT}".tar.xz
+	cd buildroot-"${BUILDROOT}"
+	make \
+		O="${BUILDROOT_OUTPUT}" \
+		qemu_riscv32_nommu_virt_defconfig
+	make "${JOBS}" \
+		O="${BUILDROOT_OUTPUT}" \
+		toolchain
+	[ -x "${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" ]
+	[ -x "${SYSROOT_NOMMU}/bin/elf2flt" ]
+	cat > "${BUILDROOT_OUTPUT}/chimera-nommu-test.c" << 'EOF'
+int main(void)
+{
+	return 0;
+}
+EOF
+	"${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" \
+		-Os \
+		-static \
+		-o "${BUILDROOT_OUTPUT}/chimera-nommu-test" \
+		"${BUILDROOT_OUTPUT}/chimera-nommu-test.c"
+	magic="$(od -An -tx1 -N4 "${BUILDROOT_OUTPUT}/chimera-nommu-test" | tr -d ' \n')"
+	[ "${magic}" = "62464c54" ] || {
+		printf "nommu toolchain produced invalid binary magic: %s\n" "${magic}" >&2
+		exit 1
+	}
+	printf "nommu toolchain done\n"
+	printf "compiler: %s/bin/%s-gcc\n" "${SYSROOT_NOMMU}" "${TARGET_NOMMU}"
+	printf "binary format: bFLT\n"
 }
 
 flinux() {
@@ -150,15 +190,15 @@ fbusybox() {
 	rm busybox-"${BUSYBOX}".tar.bz2
 	cd busybox-"${BUSYBOX}"
 	make \
-		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
+		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
 		defconfig
 	sed -i \
 		's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
 		.config
 	make "${JOBS}" \
-		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" && \
+		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" && \
 	make \
-		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
+		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
 		CONFIG_PREFIX="${ROOTFS}" \
 		install
 	printf "busybox %s done\n" "${BUSYBOX}"
@@ -212,6 +252,9 @@ case "${ARG}" in
 	toolchain-linux)
 		ftoolchain_linux
 		;;
+	toolchain-nommu)
+		ftoolchain_nommu
+		;;
 	linux)
 		flinux
 		;;
@@ -228,6 +271,7 @@ case "${ARG}" in
 		fdirs && \
 		ftoolchain && \
 		ftoolchain_linux && \
+		ftoolchain_nommu && \
 		flinux && \
 		fbusybox && \
 		fimage && \
