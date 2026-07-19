@@ -93,13 +93,33 @@ ftoolchain_nommu() {
 	make \
 		O="${BUILDROOT_OUTPUT}" \
 		qemu_riscv32_nommu_virt_defconfig
+	sed -i \
+		-e '/^BR2_RISCV_ISA_RVF=/d' \
+		-e '/^# BR2_RISCV_ISA_RVF is not set/d' \
+		-e '/^BR2_RISCV_ISA_RVD=/d' \
+		-e '/^# BR2_RISCV_ISA_RVD is not set/d' \
+		-e '/^BR2_RISCV_ABI_ILP32=/d' \
+		-e '/^# BR2_RISCV_ABI_ILP32 is not set/d' \
+		-e '/^BR2_RISCV_ABI_ILP32D=/d' \
+		-e '/^# BR2_RISCV_ABI_ILP32D is not set/d' \
+		"${BUILDROOT_OUTPUT}/.config"
+	cat >> "${BUILDROOT_OUTPUT}/.config" << 'EOF'
+# BR2_RISCV_ISA_RVF is not set
+# BR2_RISCV_ISA_RVD is not set
+BR2_RISCV_ABI_ILP32=y
+# BR2_RISCV_ABI_ILP32D is not set
+EOF
+	make \
+		O="${BUILDROOT_OUTPUT}" \
+		olddefconfig
 	make "${JOBS}" \
 		O="${BUILDROOT_OUTPUT}" \
 		toolchain
 	[ -x "${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" ]
 	[ -x "${SYSROOT_NOMMU}/bin/elf2flt" ]
 	cat > "${BUILDROOT_OUTPUT}/chimera-nommu-test.c" << 'EOF'
-int main(void)
+int
+main(void)
 {
 	return 0;
 }
@@ -107,16 +127,24 @@ EOF
 	"${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" \
 		-Os \
 		-static \
+		-Wl,-elf2flt \
 		-o "${BUILDROOT_OUTPUT}/chimera-nommu-test" \
 		"${BUILDROOT_OUTPUT}/chimera-nommu-test.c"
-	magic="$(od -An -tx1 -N4 "${BUILDROOT_OUTPUT}/chimera-nommu-test" | tr -d ' \n')"
+	magic="$(od -An -tx1 -N4 \
+		"${BUILDROOT_OUTPUT}/chimera-nommu-test" |
+		tr -d ' \n')"
 	[ "${magic}" = "62464c54" ] || {
-		printf "nommu toolchain produced invalid binary magic: %s\n" "${magic}" >&2
+		printf "nommu toolchain produced invalid binary magic: %s\n" \
+			"${magic}" >&2
 		exit 1
 	}
 	printf "nommu toolchain done\n"
-	printf "compiler: %s/bin/%s-gcc\n" "${SYSROOT_NOMMU}" "${TARGET_NOMMU}"
+	printf "compiler: %s/bin/%s-gcc\n" \
+		"${SYSROOT_NOMMU}" \
+		"${TARGET_NOMMU}"
 	printf "binary format: bFLT\n"
+	printf "add to your shell rc:\n"
+	printf "export PATH=\"/home/src/1v4n/chimera/buildroot-nommu/host/bin:\${PATH}\"\n"
 }
 
 flinux() {
