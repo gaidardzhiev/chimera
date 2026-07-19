@@ -288,7 +288,7 @@ case "${ARG}" in
 		ftoolchain_nommu && \
 		flinux && \
 		fbusybox && \
-		fimage && \
+		fimage
 		;;
 	*)
 		printf "unsupported stage: %s\n" "${ARG}"
