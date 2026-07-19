@@ -32,7 +32,7 @@ fusage() {
 	printf "usage: %s <stage>\n" "${0}"
 	printf "\n"
 	printf "stages:\n"
-	printf "\tall | dirs | toolchain | toolchain-linux | toolchain-nommu | linux | busybox | image | symlink\n"
+	printf "\tall | dirs | toolchain | toolchain-linux | toolchain-nommu | linux | busybox | image\n"
 	exit 1
 }
 
@@ -255,17 +255,6 @@ EOF
 	ls -lh "${IMAGE}"
 }
 
-fsymlink() {
-	ln -sf "${SYSROOT}/bin/${TARGET}-gcc" /usr/local/bin/riscv32-gcc
-	ln -sf "${SYSROOT}/bin/${TARGET}-as" /usr/local/bin/riscv32-as
-	ln -sf "${SYSROOT}/bin/${TARGET}-ld" /usr/local/bin/riscv32-ld
-	ln -sf "${SYSROOT}/bin/${TARGET}-objdump" /usr/local/bin/riscv32-objdump
-	ln -sf "${SYSROOT}/bin/${TARGET}-objcopy" /usr/local/bin/riscv32-objcopy
-	ln -sf "${SYSROOT}/bin/${TARGET}-strip" /usr/local/bin/riscv32-strip
-	ln -sf "${SYSROOT}/bin/${TARGET}-readelf" /usr/local/bin/riscv32-readelf
-	printf "symlinks ready in /usr/local/bin\n"
-}
-
 ARG="${1:-}"
 
 [ -z "${ARG}" ] && fusage
@@ -292,9 +281,6 @@ case "${ARG}" in
 	image)
 		fimage
 		;;
-	symlink)
-		fsymlink
-		;;
 	all)
 		fdirs && \
 		ftoolchain && \
@@ -303,7 +289,6 @@ case "${ARG}" in
 		flinux && \
 		fbusybox && \
 		fimage && \
-		fsymlink
 		;;
 	*)
 		printf "unsupported stage: %s\n" "${ARG}"
