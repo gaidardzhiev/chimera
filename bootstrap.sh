@@ -32,7 +32,7 @@ fusage() {
 	printf "usage: %s <stage>\n" "${0}"
 	printf "\n"
 	printf "stages:\n"
-	printf "\tall | dirs | toolchain | toolchain-linux | toolchain-nommu | linux | busybox | image\n"
+	printf "\tall | dirs | toolchain | toolchain-linux | toolchain-nommu | linux | busybox | image | qemu\n"
 	exit 1
 }
 
@@ -127,7 +127,7 @@ EOF
 	"${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" \
 		-Os \
 		-static \
-		-Wl,-elf2flt \
+		-Wl,-elf2flt=-r \
 		-o "${BUILDROOT_OUTPUT}/chimera-nommu-test" \
 		"${BUILDROOT_OUTPUT}/chimera-nommu-test.c"
 	magic="$(od -An -tx1 -N4 \
@@ -203,7 +203,19 @@ EOF
 	make \
 		ARCH="${ARCH}" \
 		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
-		chimera_defconfig && \
+		chimera_defconfig
+	scripts/config \
+		--enable BINFMT_FLAT \
+		--enable BINFMT_SCRIPT \
+		--disable CMDLINE_FORCE \
+		--set-str CMDLINE ""
+	make \
+		ARCH="${ARCH}" \
+		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-" \
+		olddefconfig
+	grep -q '^CONFIG_BINFMT_FLAT=y$' .config
+	grep -q '^CONFIG_BINFMT_SCRIPT=y$' .config
+	grep -q '^CONFIG_CMDLINE=""$' .config
 	make "${JOBS}" \
 		ARCH="${ARCH}" \
 		CROSS_COMPILE="${SYSROOT_LINUX}/bin/${TARGET_LINUX}-"
@@ -259,12 +271,12 @@ fbusybox() {
 	make clean
 	make "${JOBS}" \
 		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt" \
+		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt=-r" \
 		SKIP_STRIP=y
 	magic="$(od -An -tx1 -N4 busybox |
 		tr -d ' \n')"
 	[ "${magic}" = "62464c54" ] || {
-		printf "busybox produced invalid binary magic: %s\n" \
+		printf "BusyBox produced invalid binary magic: %s\n" \
 			"${magic}" >&2
 		exit 1
 	}
@@ -272,33 +284,85 @@ fbusybox() {
 	make \
 		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
 		CONFIG_PREFIX="${ROOTFS}" \
+		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt=-r" \
 		SKIP_STRIP=y \
 		install
-	printf "busybox %s done\n" "${BUSYBOX}"
-	printf "binary format: bFLT\n"
+	magic="$(od -An -tx1 -N4 "${ROOTFS}/bin/busybox" |
+		tr -d ' \n')"
+	[ "${magic}" = "62464c54" ] || {
+		printf "Installed BusyBox has invalid binary magic: %s\n" \
+			"${magic}" >&2
+		exit 1
+	}
+	printf "BusyBox %s done\n" "${BUSYBOX}"
+	printf "Binary format: bFLT\n"
 }
 
 fimage() {
-	mkdir -p "${ROOTFS}/etc/init.d"
+	mkdir -p \
+		"${ROOTFS}/etc/init.d" \
+		"${ROOTFS}/proc" \
+		"${ROOTFS}/sys" \
+		"${ROOTFS}/dev" \
+		"${ROOTFS}/tmp" \
+		"${IMAGE}"
+	chmod 1777 "${ROOTFS}/tmp"
+	rm -f \
+		"${ROOTFS}/dev/console" \
+		"${ROOTFS}/dev/null"
+	mknod \
+		-m 600 \
+		"${ROOTFS}/dev/console" \
+		c 5 1
+	mknod \
+		-m 666 \
+		"${ROOTFS}/dev/null" \
+		c 1 3
 	cat > "${ROOTFS}/etc/inittab" << 'EOF'
 ::sysinit:/etc/init.d/rcS
-::respawn:/bin/sh
+::askfirst:-/bin/sh
 ::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/swapoff -a
 ::shutdown:/bin/umount -a -r
 EOF
 	cat > "${ROOTFS}/etc/init.d/rcS" << 'EOF'
 #!/bin/sh
+
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
+
 hostname chimera
+
+echo
+echo "Chimera RV32 NOMMU"
+echo
 EOF
 	chmod +x "${ROOTFS}/etc/init.d/rcS"
 	cd "${ROOTFS}"
-	find . | cpio -H newc -o | gzip > "${IMAGE}/rootfs.cpio.gz"
-	printf "image ready: %s\n" "${IMAGE}"
-	ls -lh "${IMAGE}"
+	find . -print0 |
+		sort -z |
+		cpio \
+			--null \
+			-H newc \
+			-o |
+		gzip -9n > "${IMAGE}/rootfs.cpio.gz"
+	printf "image ready: %s/rootfs.cpio.gz\n" "${IMAGE}"
+	ls -lh "${IMAGE}/rootfs.cpio.gz"
+}
+
+fqemu() {
+	[ -f "${KERNEL}/linux-${LINUX}/arch/riscv/boot/Image" ]
+	[ -f "${IMAGE}/rootfs.cpio.gz" ]
+	qemu-system-riscv32 \
+		-machine virt \
+		-cpu rv32 \
+		-smp 1 \
+		-m 128M \
+		-nographic \
+		-bios none \
+		-kernel "${KERNEL}/linux-${LINUX}/arch/riscv/boot/Image" \
+		-initrd "${IMAGE}/rootfs.cpio.gz" \
+		-append "earlycon=uart8250,mmio,0x10000000 console=ttyS0,115200 rdinit=/sbin/init"
 }
 
 ARG="${1:-}"
@@ -326,6 +390,9 @@ case "${ARG}" in
 		;;
 	image)
 		fimage
+		;;
+	qemu)
+		fqemu
 		;;
 	all)
 		fdirs && \
