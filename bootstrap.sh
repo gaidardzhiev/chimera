@@ -213,23 +213,69 @@ EOF
 
 fbusybox() {
 	cd "${SRC}"
-	wget "${BUSYBOX_URL}"
-	tar xjf busybox-"${BUSYBOX}".tar.bz2
-	rm busybox-"${BUSYBOX}".tar.bz2
+	[ -f busybox-"${BUSYBOX}".tar.bz2 ] ||
+		wget "${BUSYBOX_URL}"
+	[ -d busybox-"${BUSYBOX}" ] ||
+		tar xjf busybox-"${BUSYBOX}".tar.bz2
 	cd busybox-"${BUSYBOX}"
 	make \
 		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		defconfig
+		distclean
+	make \
+		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
+		allnoconfig
 	sed -i \
-		's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+		-e 's/# CONFIG_NOMMU is not set/CONFIG_NOMMU=y/' \
+		-e 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+		-e 's/# CONFIG_HUSH is not set/CONFIG_HUSH=y/' \
+		-e 's/# CONFIG_SH_IS_HUSH is not set/CONFIG_SH_IS_HUSH=y/' \
+		-e 's/# CONFIG_CAT is not set/CONFIG_CAT=y/' \
+		-e 's/# CONFIG_ECHO is not set/CONFIG_ECHO=y/' \
+		-e 's/# CONFIG_LS is not set/CONFIG_LS=y/' \
+		-e 's/# CONFIG_MKDIR is not set/CONFIG_MKDIR=y/' \
+		-e 's/# CONFIG_MKNOD is not set/CONFIG_MKNOD=y/' \
+		-e 's/# CONFIG_MOUNT is not set/CONFIG_MOUNT=y/' \
+		-e 's/# CONFIG_UMOUNT is not set/CONFIG_UMOUNT=y/' \
+		-e 's/# CONFIG_DMESG is not set/CONFIG_DMESG=y/' \
+		-e 's/# CONFIG_UNAME is not set/CONFIG_UNAME=y/' \
+		-e 's/# CONFIG_HOSTNAME is not set/CONFIG_HOSTNAME=y/' \
+		-e 's/# CONFIG_SLEEP is not set/CONFIG_SLEEP=y/' \
+		-e 's/# CONFIG_HALT is not set/CONFIG_HALT=y/' \
+		-e 's/# CONFIG_POWEROFF is not set/CONFIG_POWEROFF=y/' \
+		-e 's/# CONFIG_REBOOT is not set/CONFIG_REBOOT=y/' \
+		-e 's/# CONFIG_INIT is not set/CONFIG_INIT=y/' \
+		-e 's/# CONFIG_FEATURE_USE_INITTAB is not set/CONFIG_FEATURE_USE_INITTAB=y/' \
 		.config
+	yes "" |
+		make \
+			CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
+			oldconfig
+	grep -q '^CONFIG_NOMMU=y$' .config
+	grep -q '^CONFIG_STATIC=y$' .config
+	grep -q '^CONFIG_HUSH=y$' .config
+	grep -q '^CONFIG_SH_IS_HUSH=y$' .config
+	grep -q '^# CONFIG_ASH is not set$' .config
+	grep -q '^# CONFIG_SH_IS_ASH is not set$' .config
+	make clean
 	make "${JOBS}" \
-		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" && \
+		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
+		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt" \
+		SKIP_STRIP=y
+	magic="$(od -An -tx1 -N4 busybox |
+		tr -d ' \n')"
+	[ "${magic}" = "62464c54" ] || {
+		printf "busybox produced invalid binary magic: %s\n" \
+			"${magic}" >&2
+		exit 1
+	}
+	rm -rf "${ROOTFS:?}/"*
 	make \
 		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
 		CONFIG_PREFIX="${ROOTFS}" \
+		SKIP_STRIP=y \
 		install
 	printf "busybox %s done\n" "${BUSYBOX}"
+	printf "binary format: bFLT\n"
 }
 
 fimage() {
