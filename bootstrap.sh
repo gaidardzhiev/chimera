@@ -116,7 +116,7 @@ EOF
 		O="${BUILDROOT_OUTPUT}" \
 		toolchain
 	[ -x "${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-gcc" ]
-	[ -x "${SYSROOT_NOMMU}/bin/elf2flt" ]
+	[ -x "${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-elf2flt" ]
 	cat > "${BUILDROOT_OUTPUT}/chimera-nommu-test.c" << 'EOF'
 int
 main(void)
