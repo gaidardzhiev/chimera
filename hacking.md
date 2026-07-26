@@ -147,13 +147,17 @@ Do not use OpenSBI for this kernel. OpenSBI occupies the beginning of RAM and no
 
 ## Building the NOMMU BusyBox root filesystem
 
-BusyBox 1.36.1 is built with the Buildroot NOMMU compiler:
+BusyBox is built by Buildroot with the verified NOMMU uClibc toolchain:
 
 ```sh
 ./bootstrap.sh busybox
 ```
 
-The build starts from `allnoconfig`. Only the applets required for the first root filesystem are enabled:
+The bootstrap stage writes a minimal BusyBox configuration and passes it to Buildroot through `BR2_PACKAGE_BUSYBOX_CONFIG`. Buildroot controls the complete userspace build path including the compiler, uClibc sysroot, position-independent code, static linking, elf2flt conversion, and applet installation.
+
+The current BusyBox version selected by Buildroot 2025.02.15 is 1.37.0.
+
+Only the applets required for the first root filesystem are enabled:
 
 ```
 init
@@ -175,45 +179,47 @@ poweroff
 reboot
 ```
 
-Hush is used as the shell. Ash is not enabled because the BusyBox ash implementation is not suitable for this NOMMU configuration.
+Hush is used as the shell. Ash is not enabled.
 
 The required BusyBox settings are:
 
 ```
 CONFIG_NOMMU=y
 CONFIG_STATIC=y
+CONFIG_LFS=y
 CONFIG_HUSH=y
+CONFIG_SHELL_HUSH=y
 CONFIG_SH_IS_HUSH=y
 # CONFIG_ASH is not set
-# CONFIG_SH_IS_ASH is not set
 ```
 
-BusyBox 1.36.1 provides `oldconfig`, not `olddefconfig`. The bootstrap script feeds the default answers to `oldconfig` after editing `.config`.
+`CONFIG_LFS=y` is required because Buildroot compiles userspace with `_FILE_OFFSET_BITS=64`. Without it BusyBox rejects the build because its `off_t` and `uoff_t` sizes do not match.
 
-The final executable is converted to a RAM-loaded position-independent bFLT image with:
+Buildroot invokes the BusyBox build with the NOMMU settings required by this target:
 
 ```sh
-CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt=-r"
+-fPIC
+-Wl,-elf2flt=-r
+-static
+SKIP_STRIP=y
 ```
 
-The `-r` elf2flt option produces a load-to-RAM bFLT binary. `SKIP_STRIP=y` is required because GNU strip does not recognize the already converted bFLT file. The same linker flags and `SKIP_STRIP=y` must be passed to both the build and install commands. Otherwise `make install` can relink BusyBox as ELF and replace the verified bFLT binary.
+The `-r` elf2flt option produces a load-to-RAM bFLT executable. `SKIP_STRIP=y` is required because GNU strip does not recognize the converted bFLT format.
 
-The script verifies the first four bytes of both the build-tree binary and the installed `rootfs/bin/busybox`. Both must contain:
+The bootstrap stage copies the Buildroot-installed `bin` and `sbin` trees into `rootfs`. It then verifies that `rootfs/bin/busybox` begins with the bFLT magic:
 
 ```
 62 46 4c 54
 ```
 
-The installed binary currently reports:
+The confirmed working BusyBox binary reports:
 
 ```
 BFLT executable - version 4 ram gotpic
 Flags: 0x3 ( Load-to-Ram Has-PIC-GOT )
 ```
 
-The missing `pod2man` and `pod2html` commands only prevent BusyBox documentation from being generated. Those errors are ignored by the BusyBox build and do not affect the executable.
-
-The warning in `shell/hush.c` about `exp_word` being used uninitialized is a compiler warning and is not the current boot blocker.
+The earlier manual BusyBox 1.36.1 build produced a valid-looking bFLT header but crashed during PID 1 startup. Adding `-fPIC` manually did not fix it. Rebuilding the same minimal userspace through Buildroot produced a working binary. The fault was therefore in the manual BusyBox build path, not in the Linux bFLT loader, the kernel command line, or `CONFIG_BINFMT_FLAT_NO_DATA_START_OFFSET`.
 
 
 ## Building the initramfs image
@@ -250,7 +256,7 @@ The `swapoff` shutdown line is not present because the minimal BusyBox configura
 
 The startup script mounts proc, sysfs, and devtmpfs, sets the hostname to `chimera`, and prints the system banner.
 
-The archive is sorted before cpio and compressed with `gzip -9n`. The `-n` option omits the gzip timestamp. The current minimal image is approximately 113 KiB and contains 452 cpio blocks.
+The archive is sorted before cpio and compressed with `gzip -9n`. The `-n` option omits the gzip timestamp. The confirmed working image is approximately 247 KiB and contains 971 cpio blocks.
 
 Verify the installed BusyBox before booting:
 
@@ -285,29 +291,39 @@ qemu-system-riscv32 \
     -append "earlycon=uart8250,mmio,0x10000000 console=ttyS0,115200 rdinit=/sbin/init"
 ```
 
-The kernel now accepts the QEMU command line, unpacks the initramfs, finds `/sbin/init`, recognizes the bFLT format, and starts the BusyBox process.
+The kernel accepts the QEMU command line, unpacks the initramfs, finds `/sbin/init`, recognizes the bFLT executable, and starts BusyBox as PID 1.
 
-The current boot reaches:
+The verified boot reaches:
 
 ```
 Run /sbin/init as init process
+init started: BusyBox v1.37.0
+starting pid 21, tty '': '/etc/init.d/rcS'
+
+Chimera RV32 NOMMU
+
+starting pid 29, tty '': '-/bin/sh'
 ```
 
-BusyBox then receives signal 11:
+Hush then starts successfully and presents an interactive shell:
 
 ```
-init[1]: unhandled signal 11 code 0x2 at 0x8059ef0c
-badaddr: 000373bc cause: 00000007
-Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000000b
+BusyBox v1.37.0 hush - the humble shell
+Enter 'help' for a list of built-in commands.
+
+/ #
 ```
 
-This is no longer a missing root filesystem, forced command line, missing bFLT loader, or ELF installation problem. The kernel has executed the bFLT entry point and the failure occurs in userspace during BusyBox startup.
+The root filesystem is mounted and accessible:
 
-The fault address `0x000373bc` lies immediately below the BusyBox data end `0x000373f8`. The next investigation must determine whether a BusyBox pointer or GOT entry remains unrelocated, or whether the BusyBox build requires an additional NOMMU-specific compiler setting.
+```
+/ # ls
+dev   root  bin   etc   proc  sbin  sys   tmp
+```
 
-The Linux 6.6.35 source already contains the RISC-V bFLT GOT header handling in `fs/binfmt_flat.c` through `skip_got_header()`. `CONFIG_BINFMT_FLAT` and `CONFIG_BINFMT_SCRIPT` are enabled.
+This is the first complete Linux userspace boot for the Chimera RV32 NOMMU target. Linux 6.6.35 reaches PID 1, executes the Buildroot-produced bFLT BusyBox, runs `rcS`, mounts proc, sysfs, and devtmpfs, prints the Chimera banner, and opens an interactive shell.
 
-A temporary minimal bFLT test was attempted by copying `/tmp/hello` to `rootfs/sbin/init`. This path is a symlink to `../bin/busybox`, therefore ordinary `cp` followed the symlink and overwrote `rootfs/bin/busybox`. The matching headers observed afterward belonged to the same test binary and did not compare BusyBox against the test program. Do not copy a test program onto `rootfs/sbin/init` without first removing the symlink and preserving the BusyBox binary.
+The temporary `/tmp/hello` test revealed one important filesystem detail. `rootfs/sbin/init` is a symlink to `../bin/busybox`. Copying a test program directly onto that path follows the symlink and overwrites `rootfs/bin/busybox`. A future replacement test must remove the symlink first or write to a separate path.
 
 
 ## Building the emulator
@@ -418,6 +434,8 @@ The bare-metal ELF toolchain, Linux glibc toolchain, and Buildroot uClibc NOMMU 
 
 Linux 6.6.35 builds correctly for RV32 NOMMU M-mode and boots under QEMU with console output. The kernel entry point is `0x80000000`. The forced `root=/dev/vda` command line has been removed. The kernel accepts the supplied initramfs command line, unpacks `rootfs.cpio.gz`, finds `/sbin/init`, and executes the bFLT loader.
 
-BusyBox 1.36.1 builds as a static RAM-loaded PIC bFLT binary and installs the minimal applet set into rootfs. The deterministic initramfs image builds successfully and is approximately 113 KiB.
+Buildroot 2025.02.15 builds BusyBox 1.37.0 with the minimal Chimera configuration. The resulting RAM-loaded GOTPIC bFLT binary starts as PID 1, executes `/etc/init.d/rcS`, mounts proc, sysfs, and devtmpfs, sets the hostname, and opens an interactive Hush shell.
 
-The current blocker is the BusyBox PID 1 startup fault. The process begins execution and then receives signal 11 with `badaddr 0x000373bc`. The fault is inside the BusyBox data boundary and is under investigation as a bFLT relocation, GOT, or BusyBox NOMMU build issue. The kernel, initramfs discovery, bFLT recognition, and executable entry path are verified.
+The deterministic initramfs image builds successfully. The confirmed working image is approximately 247 KiB and contains 971 cpio blocks.
+
+The first complete RV32 NOMMU Linux userspace boot is accomplished. The kernel, initramfs, bFLT loader, uClibc userspace, BusyBox init, startup script, device files, mounted virtual filesystems, serial console, and interactive shell are all verified under QEMU.

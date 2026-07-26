@@ -224,77 +224,84 @@ EOF
 }
 
 fbusybox() {
-	cd "${SRC}"
-	[ -f busybox-"${BUSYBOX}".tar.bz2 ] ||
-		wget "${BUSYBOX_URL}"
-	[ -d busybox-"${BUSYBOX}" ] ||
-		tar xjf busybox-"${BUSYBOX}".tar.bz2
-	cd busybox-"${BUSYBOX}"
-	make \
-		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		distclean
-	make \
-		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		allnoconfig
+	cd "${SRC}/buildroot-${BUILDROOT}"
+	cat > "${BUILDROOT_OUTPUT}/chimera-busybox.config" << 'EOF'
+CONFIG_STATIC=y
+CONFIG_NOMMU=y
+CONFIG_LFS=y
+
+CONFIG_HUSH=y
+CONFIG_SHELL_HUSH=y
+CONFIG_SH_IS_HUSH=y
+# CONFIG_ASH is not set
+# CONFIG_SH_IS_ASH is not set
+
+CONFIG_CAT=y
+CONFIG_DMESG=y
+CONFIG_ECHO=y
+CONFIG_HOSTNAME=y
+CONFIG_LS=y
+CONFIG_MKDIR=y
+CONFIG_MKNOD=y
+CONFIG_MOUNT=y
+CONFIG_SLEEP=y
+CONFIG_UMOUNT=y
+CONFIG_UNAME=y
+
+CONFIG_HALT=y
+CONFIG_INIT=y
+CONFIG_POWEROFF=y
+CONFIG_REBOOT=y
+CONFIG_FEATURE_USE_INITTAB=y
+EOF
 	sed -i \
-		-e 's/# CONFIG_NOMMU is not set/CONFIG_NOMMU=y/' \
-		-e 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
-		-e 's/# CONFIG_HUSH is not set/CONFIG_HUSH=y/' \
-		-e 's/# CONFIG_SH_IS_HUSH is not set/CONFIG_SH_IS_HUSH=y/' \
-		-e 's/# CONFIG_CAT is not set/CONFIG_CAT=y/' \
-		-e 's/# CONFIG_ECHO is not set/CONFIG_ECHO=y/' \
-		-e 's/# CONFIG_LS is not set/CONFIG_LS=y/' \
-		-e 's/# CONFIG_MKDIR is not set/CONFIG_MKDIR=y/' \
-		-e 's/# CONFIG_MKNOD is not set/CONFIG_MKNOD=y/' \
-		-e 's/# CONFIG_MOUNT is not set/CONFIG_MOUNT=y/' \
-		-e 's/# CONFIG_UMOUNT is not set/CONFIG_UMOUNT=y/' \
-		-e 's/# CONFIG_DMESG is not set/CONFIG_DMESG=y/' \
-		-e 's/# CONFIG_UNAME is not set/CONFIG_UNAME=y/' \
-		-e 's/# CONFIG_HOSTNAME is not set/CONFIG_HOSTNAME=y/' \
-		-e 's/# CONFIG_SLEEP is not set/CONFIG_SLEEP=y/' \
-		-e 's/# CONFIG_HALT is not set/CONFIG_HALT=y/' \
-		-e 's/# CONFIG_POWEROFF is not set/CONFIG_POWEROFF=y/' \
-		-e 's/# CONFIG_REBOOT is not set/CONFIG_REBOOT=y/' \
-		-e 's/# CONFIG_INIT is not set/CONFIG_INIT=y/' \
-		-e 's/# CONFIG_FEATURE_USE_INITTAB is not set/CONFIG_FEATURE_USE_INITTAB=y/' \
-		.config
-	yes "" |
-		make \
-			CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-			oldconfig
-	grep -q '^CONFIG_NOMMU=y$' .config
-	grep -q '^CONFIG_STATIC=y$' .config
-	grep -q '^CONFIG_HUSH=y$' .config
-	grep -q '^CONFIG_SH_IS_HUSH=y$' .config
-	grep -q '^# CONFIG_ASH is not set$' .config
-	grep -q '^# CONFIG_SH_IS_ASH is not set$' .config
-	make clean
+		-e '/^BR2_PACKAGE_BUSYBOX=/d' \
+		-e '/^# BR2_PACKAGE_BUSYBOX is not set/d' \
+		-e '/^BR2_PACKAGE_BUSYBOX_CONFIG=/d' \
+		"${BUILDROOT_OUTPUT}/.config"
+	cat >> "${BUILDROOT_OUTPUT}/.config" << EOF
+BR2_PACKAGE_BUSYBOX=y
+BR2_PACKAGE_BUSYBOX_CONFIG="${BUILDROOT_OUTPUT}/chimera-busybox.config"
+EOF
+	make \
+		O="${BUILDROOT_OUTPUT}" \
+		olddefconfig
+	make \
+		O="${BUILDROOT_OUTPUT}" \
+		busybox-dirclean
 	make "${JOBS}" \
-		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt=-r" \
-		SKIP_STRIP=y
-	magic="$(od -An -tx1 -N4 busybox |
+		O="${BUILDROOT_OUTPUT}" \
+		busybox
+	[ -x "${BUILDROOT_OUTPUT}/target/bin/busybox" ]
+	magic="$(od -An -tx1 -N4 \
+		"${BUILDROOT_OUTPUT}/target/bin/busybox" |
 		tr -d ' \n')"
 	[ "${magic}" = "62464c54" ] || {
-		printf "BusyBox produced invalid binary magic: %s\n" \
+		printf "Buildroot BusyBox has invalid binary magic: %s\n" \
 			"${magic}" >&2
 		exit 1
 	}
 	rm -rf "${ROOTFS:?}/"*
-	make \
-		CROSS_COMPILE="${SYSROOT_NOMMU}/bin/${TARGET_NOMMU}-" \
-		CONFIG_PREFIX="${ROOTFS}" \
-		CONFIG_EXTRA_LDFLAGS="-Wl,-elf2flt=-r" \
-		SKIP_STRIP=y \
-		install
-	magic="$(od -An -tx1 -N4 "${ROOTFS}/bin/busybox" |
+	mkdir -p \
+		"${ROOTFS}/bin" \
+		"${ROOTFS}/sbin"
+	cp -a \
+		"${BUILDROOT_OUTPUT}/target/bin/." \
+		"${ROOTFS}/bin/"
+	cp -a \
+		"${BUILDROOT_OUTPUT}/target/sbin/." \
+		"${ROOTFS}/sbin/"
+	[ -x "${ROOTFS}/bin/busybox" ]
+	[ -L "${ROOTFS}/sbin/init" ]
+	magic="$(od -An -tx1 -N4 \
+		"${ROOTFS}/bin/busybox" |
 		tr -d ' \n')"
 	[ "${magic}" = "62464c54" ] || {
 		printf "Installed BusyBox has invalid binary magic: %s\n" \
 			"${magic}" >&2
 		exit 1
 	}
-	printf "BusyBox %s done\n" "${BUSYBOX}"
+	printf "BusyBox built by Buildroot\n"
 	printf "Binary format: bFLT\n"
 }
 
