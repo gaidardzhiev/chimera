@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
+#include <time.h>
 
 #ifdef CHIMERA_CPU
 #define DEV
@@ -78,6 +79,7 @@
 #define ST_RO_WRITE 2
 #define ST_NO_HANDLER 3
 #define ST_BUDGET 4
+#define ST_DETACH 5
 
 typedef struct {
 	uint32_t x[32];
@@ -937,6 +939,7 @@ static const char *status_name(uint32_t s) {
 	case ST_RO_WRITE: return "faulted: write to shared read-only region";
 	case ST_NO_HANDLER: return "faulted: trap with mtvec unset";
 	case ST_BUDGET: return "stopped: step budget exhausted";
+	case ST_DETACH: return "stopped: console detached";
 	}
 	return "unknown";
 }
@@ -1044,11 +1047,29 @@ static void report(ns_t *ns,uint32_t i) {
 	fprintf(stderr,"\n");
 }
 
+static double now(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC,&ts);
+	return (double)ts.tv_sec+(double)ts.tv_nsec*1e-9;
+}
+
+static void perf(ns_t *ns,uint32_t n,double dt) {
+	uint64_t rs;
+	uint32_t i;
+	rs=0;
+	for (i=0;i<n;i++)
+		rs+=ns[i].cpu.steps;
+	fprintf(stderr,"chimera: n=%u wall=%.3fs steps=%llu rate=%.2fM/s each=%.2fM/s\n",
+		n,dt,(unsigned long long)rs,rs/dt/1e6,rs/dt/1e6/n);
+}
+
 int main(int argc,char **argv) {
 	uint32_t n,i;
 	uint8_t *tmpl;
 	ns_t *h_ns;
 	uint64_t max_steps,total,chunk;
+	double t0,dt;
+	char ms[24];
 	int kernel_mode;
 	const char *env;
 	if (argc==3) {
@@ -1059,7 +1080,7 @@ int main(int argc,char **argv) {
 		fprintf(stderr,
 			"usage: %s <binary.bin> <n>\n"
 			"       %s <kernel.bin> <initrd.bin> <chimera.dtb> <n>\n"
-			"env:   CHIMERA_MAX_STEPS (default 500000000)\n"
+			"env:   CHIMERA_MAX_STEPS (step cap for batch runs, 0 or unset is no cap)\n"
 			"       CHIMERA_CHUNK     (steps per launch, default 20000000)\n"
 			"stdin is fed to the uart of namespace 0; ctrl-] detaches\n",
 			argv[0],argv[0]);
@@ -1069,7 +1090,7 @@ int main(int argc,char **argv) {
 	if (!n)
 		die("n must be > 0");
 	env=getenv("CHIMERA_MAX_STEPS");
-	max_steps=env?strtoull(env,NULL,10):500000000ULL;
+	max_steps=env?strtoull(env,NULL,10):0ULL;
 	env=getenv("CHIMERA_CHUNK");
 	chunk=env?strtoull(env,NULL,10):20000000ULL;
 	if (!chunk)
@@ -1095,8 +1116,12 @@ int main(int argc,char **argv) {
 			h_ns[i].cpu.x[11]=DTB_LOAD;
 		}
 	}
-	fprintf(stderr,"chimera: ram=%uM ro=%uM slice=%uM n=%u max_steps=%llu\n",
-		RAM_SIZE>>20,RO_SIZE>>20,SLICE_SIZE>>20,n,(unsigned long long)max_steps);
+	if (max_steps)
+		snprintf(ms,sizeof(ms),"%llu",(unsigned long long)max_steps);
+	else
+		snprintf(ms,sizeof(ms),"none");
+	fprintf(stderr,"chimera: ram=%uM ro=%uM slice=%uM n=%u max_steps=%s\n",
+		RAM_SIZE>>20,RO_SIZE>>20,SLICE_SIZE>>20,n,ms);
 #ifdef CHIMERA_CPU
 	{
 		uint32_t seen=0;
@@ -1104,7 +1129,8 @@ int main(int argc,char **argv) {
 			die("cpu build runs a single namespace");
 		total=0;
 		console_raw();
-		while (!h_ns[0].cpu.done&&total<max_steps&&!in_quit) {
+		t0=now();
+		while (!h_ns[0].cpu.done&&(!max_steps||total<max_steps)&&!in_quit) {
 			console_pump(&h_ns[0]);
 			run_slice(&h_ns[0],tmpl,tmpl+RO_SIZE,chunk);
 			total+=chunk;
@@ -1112,9 +1138,11 @@ int main(int argc,char **argv) {
 				fputc(h_ns[0].out[seen++],stderr);
 			fflush(stderr);
 		}
+		dt=now()-t0;
 		console_restore();
 		if (!h_ns[0].cpu.done)
-			h_ns[0].cpu.status=ST_BUDGET;
+			h_ns[0].cpu.status=in_quit?ST_DETACH:ST_BUDGET;
+		perf(h_ns,n,dt);
 		report(&h_ns[0],0);
 		if (h_ns[0].out_pos)
 			fwrite(h_ns[0].out,1,h_ns[0].out_pos,stdout);
@@ -1146,7 +1174,8 @@ int main(int argc,char **argv) {
 		total=0;
 		live=1;
 		console_raw();
-		while (live&&total<max_steps&&!in_quit) {
+		t0=now();
+		while (live&&(!max_steps||total<max_steps)&&!in_quit) {
 			console_pump(&h_ns[0]);
 			cudaMemcpy(d_ns,h_ns,sizeof(ns_t),cudaMemcpyHostToDevice);
 			chimera_step<<<blocks,threads>>>(d_ns,d_ro,d_slices,n,chunk);
@@ -1165,10 +1194,12 @@ int main(int argc,char **argv) {
 				if (!h_ns[i].cpu.done)
 					live=1;
 		}
+		dt=now()-t0;
 		console_restore();
 		for (i=0;i<n;i++)
 			if (!h_ns[i].cpu.done)
-				h_ns[i].cpu.status=ST_BUDGET;
+				h_ns[i].cpu.status=in_quit?ST_DETACH:ST_BUDGET;
+		perf(h_ns,n,dt);
 		report(&h_ns[0],0);
 		for (i=0;i<n;i++)
 			if (h_ns[i].out_pos)
