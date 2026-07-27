@@ -3,6 +3,5 @@ build/
 sysroot/
 kernel/
 rootfs/
-image/
 sysroot-linux/
 buildroot-nommu/

@@ -2,15 +2,17 @@
 
 This document describes the repository structure, how to build, and the current implementation status. For the design rationale and architecture overview read [readme.md](./readme.md).
 
-
 ## Repository layout
 
 - chimera/
  - [readme.md](./readme.md) project overview and architecture
  - [hacking.md](./hacking.md) this file
+ - [findings.md](./findings.md) analysis of the defects fixed in the boot series
  - [bootstrap.sh](./bootstrap.sh) builds the cross toolchain and kernel image
- - [chimera.cu](./chimera.cu) the CUDA emulator kernel and host driver
- - [Makefile](./Makefile) builds chimera from chimera.cu via nvcc
+ - [chimera.cu](./chimera.cu) the CUDA emulator kernel and both drivers
+ - [Makefile](./Makefile) builds chimera via nvcc and chimera-cpu via c++
+ - [run.sh](./run.sh) device tree generation, image packing, and boot
+ - [verify.sh](./verify.sh) the test chain
  - [.gitignore](./.gitignore) excludes all bootstrap build artifacts
  - tests/
    - [Makefile](tests/Makefile) builds and runs the bare-metal test programs
@@ -18,7 +20,8 @@ This document describes the repository structure, how to build, and the current 
    - [uart.s](tests/uart.s) stage one: UART transmit test
    - [clint.s](tests/clint.s) stage two: CLINT timer interrupt test
    - [uart_echo.s](tests/uart_echo.s) stage three: UART receive and echo test
-
+ - tools/
+   - [mkdtb.c](tools/mkdtb.c) generates the Chimera flattened device tree
 
 ## Building the toolchains
 
@@ -56,7 +59,6 @@ export PATH="/home/src/1v4n/chimera/buildroot-nommu/host/bin:${PATH}"
 Do not add `buildroot-nommu/host/riscv32-buildroot-linux-uclibc/bin` to `PATH`. That directory contains unprefixed assembler and linker programs which can replace the host tools.
 
 The NOMMU stage verifies both the compiler and elf2flt. It builds a static test program and rejects the result unless the first four bytes are the bFLT magic `bFLT`.
-
 
 ## Building the Linux test kernel
 
@@ -144,7 +146,6 @@ Linux entry point    0x80000000
 
 Do not use OpenSBI for this kernel. OpenSBI occupies the beginning of RAM and normally starts an S-mode kernel at a different address. The Chimera test kernel is an M-mode kernel and must be started with `-bios none`.
 
-
 ## Building the NOMMU BusyBox root filesystem
 
 BusyBox is built by Buildroot with the verified NOMMU uClibc toolchain:
@@ -221,7 +222,6 @@ Flags: 0x3 ( Load-to-Ram Has-PIC-GOT )
 
 The earlier manual BusyBox 1.36.1 build produced a valid-looking bFLT header but crashed during PID 1 startup. Adding `-fPIC` manually did not fix it. Rebuilding the same minimal userspace through Buildroot produced a working binary. The fault was therefore in the manual BusyBox build path, not in the Linux bFLT loader, the kernel command line, or `CONFIG_BINFMT_FLAT_NO_DATA_START_OFFSET`.
 
-
 ## Building the initramfs image
 
 Build the root filesystem archive after BusyBox has been installed:
@@ -266,7 +266,6 @@ file rootfs/bin/busybox
 buildroot-nommu/host/bin/riscv32-buildroot-linux-uclibc-flthdr \
     -p rootfs/bin/busybox
 ```
-
 
 ## Running the NOMMU image under QEMU
 
@@ -325,63 +324,147 @@ This is the first complete Linux userspace boot for the Chimera RV32 NOMMU targe
 
 The temporary `/tmp/hello` test revealed one important filesystem detail. `rootfs/sbin/init` is a symlink to `../bin/busybox`. Copying a test program directly onto that path follows the symlink and overwrites `rootfs/bin/busybox`. A future replacement test must remove the symlink first or write to a separate path.
 
+## Memory map
+
+Guest RAM is one flat window at `0x80000000` of `RAM_SIZE` bytes. An address is decoded as
+
+```
+p = addr - 0x80000000            must be below RAM_SIZE, otherwise access fault
+p <  RO_SIZE                     shared region, read only, a write faults
+p >= RO_SIZE                     private slice at offset p - RO_SIZE
+```
+
+The MMIO ranges for the UART at `0x10000000` and the CLINT at `0x02000000` are decoded before RAM and are private to each namespace.
+
+The load addresses are:
+
+```
+kernel      0x80000000
+initramfs   0x80300000
+device tree 0x80400000
+```
+
+All three are placed in the RAM template the cpu uploads once. The device fills every private slice from that template above `RO_SIZE`, so the cpu never allocates guest memory per namespace.
+
+`RO_SIZE=0` gives each namespace a complete private copy of the image and shares nothing. This is the default and is what the Linux boot has been verified with.
+
+To share the kernel text, set `RO_SIZE` to the offset of `_etext` rounded down to a page:
+
+```sh
+riscv32-unknown-linux-gnu-nm kernel/linux-6.6.35/vmlinux | grep -w _etext
+```
+
+Two conditions must hold before that is safe. `CONFIG_RISCV_ALTERNATIVE` must be off, because alternatives patch `.text` in place during boot and would write into the shared region. And `__init_begin` must be above `_etext`, so that `free_initmem`, which does write to that range, stays inside the private slice. Boot a single namespace after changing it. A split placed too high fails immediately and reports the faulting address and program counter:
+
+```
+chimera: ns[0] faulted: write to shared read-only region ... addr=0x... fault_pc=0x...
+```
+
+The saving is smaller than it appears. The kernel reports 1479K of code against 290K of rwdata, 200K of rodata, 131K of init and 107K of bss, and the initramfs is unpacked into tmpfs inside the private slice rather than executed in place. Sharing the kernel text therefore recovers under ten percent of a 16MB slice. Making the sharing significant requires a read only root filesystem held in the shared region with XIP bFLT execution instead of an initramfs, which is a root filesystem and kernel configuration change rather than an emulator change.
 
 ## Building the emulator
 
-The emulator requires an Nvidia GPU with CUDA support and nvcc installed. The reference hardware is an RTX 3060 Ti.
+The emulator builds two ways from one source file. The CUDA build requires an Nvidia GPU and nvcc. The reference hardware is an RTX 3060 Ti.
 
 ```sh
-make
+make            # chimera, via nvcc
+make cpu       # chimera-cpu, via c++
 ```
 
-This produces the chimera binary at the project root. The compute capability is hardcoded to sm_86 in the Makefile, which targets the Ampere architecture of the 3060 Ti. Change this to match your card if different.
+`chimera.cu` compiles as ordinary C++ when `CHIMERA_CPU` is defined. The emulator core is identical in both builds. Only the driver differs: the CUDA build launches one thread per namespace, the cpu build runs a single namespace in the calling process. Nothing about the guest is special cased. A guest that behaves differently under the two builds indicates a CUDA defect rather than an emulation defect, which is the fastest way to narrow a failure.
 
+The compute capability is set by `ARCH` in the Makefile and defaults to `sm_86` for the Ampere architecture of the 3060 Ti. Change it to match the card.
+
+Two Makefile variables define the guest memory map and are passed to both builds:
+
+```
+RAM_SIZE=33554432    guest RAM window at 0x80000000
+RO_SIZE=0            leading bytes of that window shared across namespaces
+```
+
+`RAM_SIZE` must match the memory node in the device tree. `run.sh` passes the same value to `mkdtb`, so the two cannot drift apart. Linux with the BusyBox initramfs requires at least 16MB and will not reach a shell below that; 32MB is comfortable. `RO_SIZE` is described under Memory map below.
 
 ## Running the emulator
 
-The emulator takes a flat binary and a namespace count.
+The emulator takes either a flat bare-metal binary or a kernel, initramfs and device tree, followed by a namespace count.
 
 ```sh
 ./chimera binary.bin N
+./chimera kernel.bin initrd.bin chimera.dtb N
 ```
 
-The binary is loaded into the shared read-only region at ENTRY_POINT (0x80000000). N namespaces are launched simultaneously, each running the same binary. Output from all namespaces is collected in deterministic order and written to stdout.
-
-To produce a flat binary from the test ELF files use objcopy:
+`run.sh` wraps the kernel path and keeps the load addresses, the memory size and the timebase consistent between the device tree and the emulator:
 
 ```sh
-riscv32-unknown-elf-objcopy -O binary tests/uart.elf uart.bin
-./chimera uart.bin 1
+./run.sh mkdtb
+./run.sh pack
+./run.sh boot 1        # CUDA build
+./run.sh cpuboot      # cpu build, single namespace
 ```
 
-A correct run prints chimera once. With N=4000 it prints chimera four thousand times.
+Console output from namespace 0 is streamed to stderr as the run proceeds. The complete output buffer of every namespace is written to stdout in namespace order when the run ends, so batch collection remains deterministic regardless of how the hardware scheduled the warps.
 
+Standard input is fed to the UART receive path of namespace 0. When stdin is a terminal it is placed in raw mode and the guest gets a live interactive console; ctrl-] detaches and ends the run. When stdin is a pipe the bytes are queued in the receive ring and consumed by the guest as it reads them. Namespaces other than 0 receive no input.
+
+Two environment variables control execution:
+
+```
+CHIMERA_MAX_STEPS   total instruction budget for the run, default 500000000
+CHIMERA_CHUNK       instructions per kernel launch, default 20000000
+```
+
+A booted Linux never terminates, so the step budget is what ends the run. The default is roughly eight seconds of guest time at the configured timebase, which reaches a shell with headroom. Raise it for interactive use.
+
+The chunk is how far the CUDA kernel runs before returning to the cpu. All machine state lives in device memory across launches, so relaunching costs only launch overhead and loses no progress. The chunk matters for two reasons. Output is drained and input is collected only between launches, so a large chunk makes an interactive console unusable. And if the card is also driving a display, the driver watchdog terminates any launch that runs longer than about two seconds, which appears as `launch failed: the launch timed out and was terminated`. Lower the chunk until each launch fits inside the watchdog window. Two hundred thousand is a reasonable value for interactive work.
+
+## Verification
+
+`verify.sh` runs the whole chain. The CUDA tests are skipped when nvcc is absent, so the same script is useful on a machine without a card.
+
+```sh
+./verify.sh
+NS=64 STEPS=800000000 ./verify.sh
+```
+
+```
+ft1  the cpu emulator builds
+ft2  a 36 byte hand assembled binary prints ok and exits in exactly 9 steps
+ft3  the generated device tree is a well formed flattened device tree
+ft4  Linux reaches init, then the rcS banner, then a shell prompt
+ft5  two cpu boots are byte identical
+ft6  a store into the shared region faults the namespace at the right address
+ft10 typed input on a real terminal reaches the guest shell
+ft7  the CUDA emulator builds
+ft8  a one namespace CUDA boot is byte identical to the cpu boot
+ft9  N namespaces each produce a complete and identical boot log
+```
+
+ft2 requires no RISC-V toolchain. The binary is written by the script and exercises LUI, ADDI, SB, the UART transmit path and the `mtvec` unset ecall exit contract, so a decode regression is caught before anything larger runs.
+
+ft5 and ft8 are the pair that matter. Guest time is derived from a retired instruction counter rather than from wall clock, so a Chimera boot is fully deterministic. ft5 establishes that, and ft8 then compares a CUDA boot against the cpu boot byte for byte. Any difference is a race, a stray pointer or an unfilled slice on the device rather than an emulation error.
+
+ft10 drives the emulator through a pseudo terminal with script, waits for the prompt, types an arithmetic expansion and requires the result to appear in addition to the echo of the typed line. A piped stdin test cannot substitute for it: on a terminal in non-canonical mode a read with no data pending returns zero rather than EAGAIN, which is indistinguishable from end of file unless the descriptor is known to be a terminal. Treating it as end of file disables input for the rest of the run, and the failure is invisible to any test that feeds input through a pipe.
+
+ft9 checks both that every namespace reached userspace and that the total output is exactly N times a single log, which detects slices overlapping.
+
+The bare-metal programs still run under QEMU against the virt machine, which uses the same UART and CLINT addresses, and the same binaries converted with objcopy are the first inputs to the emulator:
+
+```sh
+cd tests && make && cd ..
+riscv32-unknown-elf-objcopy -O binary tests/uart.elf uart.bin
+./chimera-cpu uart.bin 1
+./chimera uart.bin 4000
+```
+
+A binary that produces correct output under QEMU and incorrect output under Chimera indicates a defect in the emulator.
 
 ## Benchmarks
 
-The following measurements were taken on the reference hardware, an RTX 3060 Ti with 8GB GDDR6 VRAM. The binary under test is uart.bin, the flat binary produced from tests/uart.s via objcopy. It prints the string "chimera" to the NS16550 UART and exits. This is a bare-metal program with no Linux kernel involved. It exercises the RV32I decode loop, the UART transmit path, and the namespace isolation mechanism, nothing more.
+The measurements previously recorded here were taken before the cpu driver was corrected and no longer describe the emulator. They were dominated by the cpu side allocation: `ns_t` embedded the entire private slice, so the driver allocated, uploaded and downloaded the whole guest memory of every namespace. The reported figure of approximately 2.2MB of cpu RAM per namespace is exactly `SLICE_SIZE`, and the linear time scaling was the cost of that copy rather than of emulation.
 
-```sh
-for n in 1 10 100 500 1000 2000 3000; do
-    /usr/bin/time -f "$n namespaces: %e seconds, %M KiB host RAM" \
-        ./chimera uart.bin "$n" >/dev/null
-done
-```
+Private slices are now allocated on the device and filled there from a single uploaded template. The cpu holds only the `ns_t` array, which is the register file, the CSR set and the IO buffers. The benchmark must be taken again.
 
-```
-1    namespaces:  0.31 seconds,  101996 KiB host RAM
-10   namespaces:  0.28 seconds,  121784 KiB host RAM
-100  namespaces:  0.64 seconds,  317572 KiB host RAM
-500  namespaces:  2.47 seconds, 1187976 KiB host RAM
-1000 namespaces:  4.32 seconds, 2276144 KiB host RAM
-2000 namespaces:  8.65 seconds, 4452340 KiB host RAM
-3000 namespaces: 12.66 seconds, 6628436 KiB host RAM
-```
-
-Scaling is linear. From 1000 to 2000 namespaces time doubles from 4.32 to 8.65 seconds. From 2000 to 3000 it adds the same 4.3 seconds again. Host RAM scales proportionally at approximately 2.2MB per namespace, consistent with the configured SLICE_SIZE. No serialization points between namespaces are visible in the data.
-
-These numbers do not represent Linux namespace performance. They represent the emulator core under a minimal bare-metal workload. Linux kernel boot and the full namespace stack are not yet implemented. The linear scaling result confirms the architectural property that matters before that work begins: namespaces are independent and the GPU scheduler handles them without contention.
-
+The figures worth recording are the wall clock of a complete boot to a shell at one namespace against the same boot at 64 and at 256, and the retired instructions per second implied by each. A single GPU thread is considerably slower at branchy interpretation than a CPU core, so the one namespace case is expected to lose to the cpu build by a wide margin. The architectural claim in readme.md is about aggregate throughput, and it stands or falls on whether the 256 namespace case costs substantially more wall clock than the one namespace case.
 
 ## Building and running the tests
 
@@ -404,38 +487,46 @@ Exit QEMU with Ctrl-A X.
 
 The same binaries converted to flat format with objcopy are the first inputs to the CUDA emulator. A binary that produces correct output under QEMU and incorrect output under Chimera indicates a bug in the emulator.
 
-
 ## Source map
 
 [chimera.cu](./chimera.cu) is the emulator. The structure from top to bottom:
 
-Constants and type definitions: SLICE_SIZE, SHARED_SIZE, ENTRY_POINT, and the MMIO base addresses are defined at the top. cpu_t holds the register file and CSR set for one namespace. ns_t holds the complete mutable state of one namespace including its private memory slice, IO buffers, and cpu_t.
+Constants and type definitions: `RAM_SIZE`, `RO_SIZE`, the load addresses and the MMIO bases are defined at the top. `cpu_t` holds the register file, the CSR set, the current privilege level and the fault record for one namespace. `ns_t` holds `cpu_t`, the UART register file and the IO buffers. The private slice is no longer a member of `ns_t`; it is a separate device allocation indexed by thread.
 
-Memory access: mem_read32, mem_read8, mem_write32, mem_write8 dispatch between the shared read-only region and the private slice. A write to the shared region sets the done flag and terminates the namespace.
+Memory access: `ram_off` decodes an address and its full access width against the RAM window, `ram_ptr` selects the shared region or the private slice, and `mem_read` and `mem_write` handle 1, 2 and 4 byte accesses. A write below `RO_SIZE` sets the done flag, records the faulting address and program counter, and terminates the namespace.
 
-MMIO dispatch: mmio_read and mmio_write handle the UART and CLINT register surfaces. is_mmio gates all load and store operations.
+MMIO dispatch: `mmio_read` and `mmio_write` implement the NS16550 register file including the divisor latch, the scratch register and the interrupt identity register, which the 8250 autoconfiguration path requires in order to recognise the part, together with the CLINT `mtime` and `mtimecmp` registers. `is_mmio` gates all load and store operations.
 
-Timer and interrupt: timer_tick advances mtime by TIMER_QUANTUM on every fetch iteration and sets the timer pending bit in mip when mtime reaches mtimecmp. interrupt_check delivers the interrupt to mtvec before the next fetch if mstatus and mie permit.
+Timer and interrupt: `device_tick` advances `mtime` by `TIMER_QUANTUM` on every retired instruction and recomputes the machine timer pending bit as a level signal from `mtime` against `mtimecmp`. `interrupt_check` delivers a pending interrupt before the next fetch, and takes account of the current privilege level: machine interrupts are enabled unconditionally while the hart is below machine mode.
 
-CSR access: csr_read and csr_write centralize all CSR access covering mstatus, mie, mip, mtvec, mscratch, mepc, and mcause.
+Traps: `trap` implements the machine mode trap entry for exceptions and interrupts, stacking the privilege level into `MPP` and the interrupt enable into `MPIE`, recording `mcause` and `mtval`, and honouring vectored mode. `MRET` restores both.
 
-Fetch decode execute: this is the main decode loop, that fetches one instruction, decodes the fixed RV32I fields, dispatches on opcode. Implements the full RV32I base ISA and the complete M extension.
+CSR access: `csr_read` and `csr_write` centralise all CSR access and enforce the read only bits of `mip`.
 
-Chimera kernel: The CUDA device kernel. One thread per namespace. Initializes pc to ENTRY_POINT and runs the fetch loop until the done flag is set.
+Compressed instructions: `decompress` expands a 16 bit instruction into the equivalent 32 bit encoding, which the ordinary decoder then executes. The kernel image is built with the C extension regardless of the toolchain configuration, so this path carries the majority of the instructions executed during a boot.
 
-Host driver: main loads the flat binary into the shared region, allocates and initializes N namespace structs, launches the kernel, collects output, and writes it to stdout.
+Fetch decode execute: the main decode loop. It reads a halfword, decompresses it or reads the second halfword, decodes the fixed fields and dispatches on opcode. Implements the full RV32I base ISA, the complete M extension, the A extension without atomicity, the Zicsr and Zifencei instructions, and the machine mode privileged instructions.
 
+`run_slice`: the bounded execution loop. It retires at most a given number of instructions and returns, so a namespace that never terminates cannot hang a kernel launch.
+
+Chimera kernels: `chimera_fill` initialises every private slice from the uploaded RAM template. `chimera_step` runs one namespace per thread for one chunk.
+
+CPU driver: `main` loads the images into the template with bounds checking, initialises the namespace array, uploads once, then launches `chimera_step` repeatedly, draining console output and collecting console input between launches, until every namespace is done or the step budget is exhausted.
 
 ## Implementation status
 
-The RV32I base integer ISA is fully implemented. The M extension is fully implemented. The A extension atomics are stubbed in opcode 0x2f with a non-atomic load-store pair sufficient for single-threaded use. CSR access covers the M-mode registers required for interrupt handling. The UART transmit and receive paths are implemented. The CLINT timer is implemented. The virtio-net NIC controller is not yet implemented, the MMIO range returns zero on read and discards writes.
+Linux 6.6.35 boots to an interactive Hush shell under the emulator, on the CUDA build on an RTX 3060 Ti and on the cpu build. The console is interactive in both.
+
+The RV32I base integer ISA is fully implemented. The M extension is fully implemented. The C extension is implemented by expansion to the equivalent 32 bit encodings. The A extension is stubbed with a non-atomic load store pair, which is sufficient while each namespace is a single hart and will not be sufficient once the NIC controller introduces shared state. Machine and user privilege levels are implemented, which the NOMMU port requires: the kernel runs in machine mode and userspace runs in user mode, and the kernel distinguishes them by `MPP`. Trap entry and return, `mcause`, `mtval`, and the `MIE` and `MPIE` stacking are implemented. The CLINT timer is implemented. The NS16550 is implemented to the extent the 8250 autoconfiguration path probes.
+
+The UART carries no interrupt line. Chimera implements no PLIC, and a device cannot be wired directly to the hart local external interrupt, because riscv-intc maps its interrupts as per-CPU devids and `request_irq` from the 8250 driver fails. The device tree therefore declares no interrupt for the port and the driver runs it timer polled, which is consistent with the hardware model in readme.md. A PLIC becomes necessary at the NIC controller stage.
+
+The virtio-net NIC controller is not implemented. The MMIO range returns zero on read and discards writes.
+
+Input is delivered to namespace 0 only. The batch model in readme.md requires per-namespace input, which is not yet implemented.
 
 The bare-metal ELF toolchain, Linux glibc toolchain, and Buildroot uClibc NOMMU toolchain are built and verified. The NOMMU toolchain produces static RV32 bFLT executables.
 
-Linux 6.6.35 builds correctly for RV32 NOMMU M-mode and boots under QEMU with console output. The kernel entry point is `0x80000000`. The forced `root=/dev/vda` command line has been removed. The kernel accepts the supplied initramfs command line, unpacks `rootfs.cpio.gz`, finds `/sbin/init`, and executes the bFLT loader.
+Linux 6.6.35 builds correctly for RV32 NOMMU M-mode and boots both under QEMU and under Chimera. Buildroot 2025.02.15 builds BusyBox 1.37.0 with the minimal Chimera configuration. The resulting RAM-loaded GOTPIC bFLT binary starts as PID 1, executes `/etc/init.d/rcS`, mounts proc, sysfs and devtmpfs, sets the hostname, and opens an interactive Hush shell.
 
-Buildroot 2025.02.15 builds BusyBox 1.37.0 with the minimal Chimera configuration. The resulting RAM-loaded GOTPIC bFLT binary starts as PID 1, executes `/etc/init.d/rcS`, mounts proc, sysfs, and devtmpfs, sets the hostname, and opens an interactive Hush shell.
-
-The deterministic initramfs image builds successfully. The confirmed working image is approximately 247 KiB and contains 971 cpio blocks.
-
-The first complete RV32 NOMMU Linux userspace boot is accomplished. The kernel, initramfs, bFLT loader, uClibc userspace, BusyBox init, startup script, device files, mounted virtual filesystems, serial console, and interactive shell are all verified under QEMU.
+The first complete RV32 NOMMU Linux boot on GPU hardware is accomplished. The kernel, initramfs, bFLT loader, uClibc userspace, BusyBox init, startup script, device files, mounted virtual filesystems, serial console, and interactive shell are all verified under the emulator.
