@@ -22,9 +22,7 @@ TOOLCHAIN_REPO="https://github.com/riscv-collab/riscv-gnu-toolchain"
 BUILDROOT="2025.02.15"
 BUILDROOT_URL="https://buildroot.org/downloads/buildroot-${BUILDROOT}.tar.xz"
 LINUX="6.6.35"
-BUSYBOX="1.36.1"
 LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX}.tar.gz"
-BUSYBOX_URL="https://busybox.net/downloads/busybox-${BUSYBOX}.tar.bz2"
 
 export PATH="${SYSROOT}/bin:${SYSROOT_LINUX}/bin:${PATH}"
 

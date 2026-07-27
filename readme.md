@@ -130,8 +130,6 @@ Some files under `image/` are not Chimera's work. They are compiled binaries of 
 
 `image/initrd.bin` is a byte-identical copy of `image/rootfs.cpio.gz`, placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
 
-Note that the BusyBox in the published rootfs is 1.37.0, the version Buildroot 2025.02.15 supplies. It is not the 1.36.1 named by the abandoned manual build path described in hacking.md.
-
 ## Corresponding source
 
 GPL-2.0-only section 3 requires that object code be accompanied by the complete corresponding source, which it defines as all the source for all modules the executable contains, plus any associated interface definition files, plus the scripts used to control compilation and installation.
