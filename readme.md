@@ -124,11 +124,11 @@ Some files under `image/` are not Chimera's work. They are compiled binaries of 
 
 ## Published binaries
 
-`image/kernel.bin` is an unmodified build of the Linux kernel version 6.6.35, licensed GPL-2.0-only, obtained from `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz`. Its sha256 is `ac16a412766714b739f3446c64621ddde4945d512f8ccf27c1a14b68b9ee3326`.
+[image/kernel.bin](image/kernel.bin) is an unmodified build of the Linux kernel version 6.6.35, licensed GPL-2.0-only, obtained from `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz`. Its sha256 is `ac16a412766714b739f3446c64621ddde4945d512f8ccf27c1a14b68b9ee3326`.
 
-`image/rootfs.cpio.gz` is an initramfs produced by Buildroot 2025.02.15, obtained from `https://buildroot.org/downloads/buildroot-2025.02.15.tar.xz`. Its sha256 is `357ea9726e7ad0fcf7d964f1acb8a44b824eb2bc55a0ae19d87c0e4b3461b72e`. It contains one executable, `bin/busybox`, which is BusyBox 1.37.0 licensed GPL-2.0-only, statically linked against uClibc-ng which is licensed LGPL-2.1-or-later. The remaining entries are symbolic links to that binary, two empty device nodes, and the two shell scripts `etc/inittab` and `etc/init.d/rcS`, which are Chimera's own work and are GPL-3.0-only along with the rest of the repository.
+[image/rootfs.cpio.gz](image/rootfs.cpio.gz) is an initramfs produced by Buildroot 2025.02.15, obtained from `https://buildroot.org/downloads/buildroot-2025.02.15.tar.xz`. Its sha256 is `357ea9726e7ad0fcf7d964f1acb8a44b824eb2bc55a0ae19d87c0e4b3461b72e`. It contains one executable, `bin/busybox`, which is BusyBox 1.37.0 licensed GPL-2.0-only, statically linked against uClibc-ng which is licensed LGPL-2.1-or-later. The remaining entries are symbolic links to that binary, two empty device nodes, and the two shell scripts `etc/inittab` and `etc/init.d/rcS`, which are Chimera's own work and are GPL-3.0-only along with the rest of the repository.
 
-`image/initrd.bin` is a byte-identical copy of `image/rootfs.cpio.gz`, placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
+[image/initrd.bin](image/initrd.bin) is a byte-identical copy of `image/rootfs.cpio.gz`, placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
 
 ## Corresponding source
 
@@ -136,16 +136,16 @@ GPL-2.0-only section 3 requires that object code be accompanied by the complete 
 
 The scripts used to control compilation are in this repository. [bootstrap.sh](./bootstrap.sh) pins the exact upstream versions and download URLs, writes the kernel configuration to `arch/riscv/configs/chimera_defconfig` and the BusyBox configuration to `chimera-busybox.config` as literal heredocs, and applies every Buildroot configuration change as an explicit edit. Running it reproduces both published binaries from upstream sources with no manual step, and reproduces them from unmodified upstream sources, because neither the kernel nor BusyBox is patched.
 
-Neither binary is patched. Both are ordinary builds of unmodified upstream releases, so the corresponding source is the upstream release itself: `linux-6.6.35.tar.gz` for the kernel, and for the rootfs the BusyBox and uClibc-ng releases that Buildroot 2025.02.15 downloads during the build. The URLs and checksums are given above, `bootstrap.sh` pins the versions, and `make legal-info` in the Buildroot tree reproduces the exact set of source tarballs that went into the image along with a manifest of every component.
+Neither binary is patched. Both are ordinary builds of unmodified upstream releases, so the corresponding source is the upstream release itself: `linux-6.6.35.tar.gz` for the kernel, and for the rootfs the BusyBox and uClibc-ng releases that Buildroot 2025.02.15 downloads during the build. The URLs and checksums are given above, [bootstrap.sh](./bootstrap.sh) pins the versions, and `make legal-info` in the Buildroot tree reproduces the exact set of source tarballs that went into the image along with a manifest of every component.
 
 The source tarballs are not committed to this repository because the kernel release alone is more than an order of magnitude larger than everything else here and exceeds what the hosting platform accepts in a single file.
 
 ## Relinking
 
-uClibc-ng is statically linked into `bin/busybox`. LGPL-2.1 section 6 requires that a recipient be able to relink the work against a modified version of the library. That is satisfied here because BusyBox is itself GPL-2.0-only and its complete source, its configuration and the toolchain that built it are all reproducible from `bootstrap.sh`, so the entire binary can be rebuilt rather than merely relinked.
+uClibc-ng is statically linked into `bin/busybox`. LGPL-2.1 section 6 requires that a recipient be able to relink the work against a modified version of the library. That is satisfied here because BusyBox is itself GPL-2.0-only and its complete source, its configuration and the toolchain that built it are all reproducible from [bootstrap.sh](./bootstrap.sh), so the entire binary can be rebuilt rather than merely relinked.
 
 ## Aggregation
 
 The GPL-3.0-only emulator and the GPL-2.0-only guest binaries are separate works distributed on the same medium. Chimera does not link against the kernel or against BusyBox, does not derive from either, and does not incorporate any of their code. It executes them as data, the same way a processor does. This is mere aggregation, permitted by GPL-2.0-only section 2 and GPL-3.0-only section 5.
 
-GPL-2.0-only and GPL-3.0-only are not compatible for combining into a single work. Kernel or BusyBox code must therefore never be copied into `chimera.cu` or any other Chimera source file. Emulating an interface is not copying an implementation, and the register layouts and instruction encodings Chimera implements come from the RISC-V specification and the NS16550 datasheet rather than from the Linux drivers for them.
+GPL-2.0-only and GPL-3.0-only are not compatible for combining into a single work. Kernel or BusyBox code must therefore never be copied into [chimera.cu](./chimera.cu) or any other Chimera source file. Emulating an interface is not copying an implementation, and the register layouts and instruction encodings Chimera implements come from the RISC-V specification and the NS16550 datasheet rather than from the Linux drivers for them.
