@@ -128,7 +128,7 @@ Some files under [image/](image/) are not Chimera's work. They are compiled bina
 
 [image/rootfs.cpio.gz](image/rootfs.cpio.gz) is an initramfs produced by Buildroot 2025.02.15, obtained from `https://buildroot.org/downloads/buildroot-2025.02.15.tar.xz`. Its sha256 is `357ea9726e7ad0fcf7d964f1acb8a44b824eb2bc55a0ae19d87c0e4b3461b72e`. It contains one executable, `bin/busybox`, which is BusyBox 1.37.0 licensed GPL-2.0-only, statically linked against uClibc-ng which is licensed LGPL-2.1-or-later. The remaining entries are symbolic links to that binary, two empty device nodes, and the two shell scripts `etc/inittab` and `etc/init.d/rcS`, which are Chimera's own work and are GPL-3.0-only along with the rest of the repository.
 
-[image/initrd.bin](image/initrd.bin) is a byte-identical copy of `image/rootfs.cpio.gz`, placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
+[image/initrd.bin](image/initrd.bin) is a byte-identical copy of [image/rootfs.cpio.gz](image/rootfs.cpio.gz), placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
 
 ## Corresponding source
 
