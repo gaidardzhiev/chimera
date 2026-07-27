@@ -25,7 +25,7 @@ fpass() {
 
 ffail() {
 	printf "%s  ${RED}FAILED${NONE}  %s\n" "$(fstamp)" "${1}"
-	return "${2}"
+	exit "${2}"
 }
 
 fskip() {

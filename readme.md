@@ -1,8 +1,8 @@
 # Chimera
 
-Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots one NOMMU RV32I Linux kernel image into shared read-only device memory and multiplexes thousands of isolated process namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own private writable memory region, its own file descriptors, and its own output buffer. The kernel and all read-only library and filesystem data are shared across every namespace simultaneously. A write to the shared region faults the offending namespace and terminates it. The others continue.
+Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots a NOMMU RV32 Linux kernel image and multiplexes many isolated machine namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own CSR set, its own private writable memory, its own console and its own output buffer. A configurable read-only prefix of guest RAM is shared across every namespace simultaneously, and a write to it faults the offending namespace and terminates it. The others continue.
 
-The result is thousands of structurally isolated Linux process environments on one GPU card, each believing it owns the machine, none of them able to affect any other, all running simultaneously in the time it takes to run one.
+Linux 6.6.35 boots to an interactive shell under this emulator, on the CUDA build on an RTX 3060 Ti and on the cpu build. The console is interactive in both. The result is hundreds of structurally isolated Linux machines on one GPU card, each believing it owns the hardware, none of them able to affect any other.
 
 
 ## The Problem
@@ -18,46 +18,46 @@ Chimera approaches the problem differently. The isolation boundary is the emulat
 
 VRAM is divided into two regions before the kernel launches.
 
-The shared region holds the kernel text section, the root filesystem, and all read-only library data. The kernel text is the executable code only. The kernel data, bss, and init sections are writable and live in each namespace's private slice alongside the process memory. A Linux kernel writes into its own data sections during initialization, patches alternatives, and initializes global structures. None of that touches the text section, which is genuinely read-only after the image is built. The shared region is written once by the host before the kernel launches and never modified again. Every thread reads from it freely. A 64MB shared region is sufficient for a minimal NOMMU Linux with busybox and uclibc.
+Guest RAM is one flat window at 0x80000000 of RAM_SIZE bytes, exactly as a real machine presents it. The window is split at RO_SIZE. Everything below the split is the shared region, read only, one copy for the whole card. Everything at or above it is the namespace's private slice, mapped into the guest address space at its natural address rather than at zero, so that the kernel's own data and bss land in private memory without the kernel knowing anything has been divided.
 
-The private region is partitioned into per-thread slices. Each slice holds the complete mutable state of one namespace: the register file, the CSR set, the stack, the heap arena, the file descriptor table, and the output buffer. The slice size is a compile-time constant. On an RTX 3060 Ti with 8GB VRAM, after reserving the shared region, approximately 7.9GB remains for private slices. At 2MB per slice, nearly 4000 namespaces fit. At 1MB, close to 8000.
+    guest physical:
+    [ 0x80000000                shared RO, RO_SIZE bytes       ]
+    [ 0x80000000 + RO_SIZE      private RW, RAM_SIZE - RO_SIZE ]
 
     VRAM:
-    [ shared RO: kernel, rootfs, libs       ~64MB          ]
-    [ private RW: namespace 0               slice_size     ]
-    [ private RW: namespace 1               slice_size     ]
-    [ private RW: namespace 2               slice_size     ]
-    [ NIC controller 0                      fixed region   ]
-    [ NIC controller 1..M                   fixed region   ]
-    ...
+    [ RAM template              RAM_SIZE, uploaded once        ]
+    [ private slice: ns 0       RAM_SIZE - RO_SIZE             ]
+    [ private slice: ns 1       RAM_SIZE - RO_SIZE             ]
+    [ private slice: ns 2       ...                            ]
+    [ NIC controller 0..M       fixed region, not implemented  ]
 
-Each namespace thread computes its private base as:
+The cpu uploads one RAM template holding the kernel, the initramfs and the device tree, and a device kernel fills every private slice from it. The cpu never allocates guest memory per namespace. Reads from the shared region require no synchronization. Writes to it are caught by a range check in the memory access path and fault the namespace immediately, recording the faulting address and program counter.
 
-    private = private_pool + thread_id * SLICE_SIZE
+RO_SIZE defaults to zero, which gives each namespace a complete private copy and shares nothing. That is what the Linux boot is verified with. Raising it to the offset of the kernel's _etext shares the kernel text, which is genuinely read-only after the image is built, provided alternatives patching is disabled and the init sections that free_initmem writes to stay above the split.
 
-Reads from the shared region require no synchronization. Writes to it are detected by range check in the memory access path of the emulator and fault the namespace immediately.
+The honest arithmetic is less favourable than it first appears. The kernel reports 1479K of code against 290K of rwdata, 200K of rodata, 131K of init and 107K of bss, and the initramfs is unpacked into tmpfs inside the private slice rather than executed in place, so it costs every namespace a second time. Sharing the kernel text therefore recovers under ten percent of a slice. Booting at decreasing RAM_SIZE puts the floor for this rootfs at 16MB: 24MB and 16MB reach a shell, 12MB does not, and 10MB panics with no working init. On 8GB that is roughly 450 to 480 namespaces rather than thousands. Making the sharing significant means replacing the initramfs with a read-only root held in the shared region and executed in place, which is a root filesystem and kernel configuration change rather than an emulator change.
 
 
 ## Emulated Hardware
 
 Chimera emulates a minimal RV32I machine sufficient to boot NOMMU Linux and run processes under it. The emulated hardware surface is small by design.
 
-The CPU implements the RV32I base integer instruction set. All 47 instructions are implemented. The register file is 32 32-bit registers with x0 hardwired to zero. The M extension (integer multiply and divide) is included because the Linux kernel and uclibc require it. No other extensions are implemented in the first version.
+The CPU implements the RV32I base integer instruction set with the register file of 32 32-bit registers and x0 hardwired to zero. The M extension is implemented in full because the kernel and uClibc require it. The C extension is implemented by expanding each compressed encoding into its 32 bit equivalent before decode, which is not optional: the kernel adds the C extension to its own march irrespective of how the toolchain was configured, and 62 percent of the instructions in its text are compressed. The A extension is present as a non-atomic load store pair, which is sufficient while a namespace is a single hart and will not be sufficient once the NIC controller introduces shared state.
 
-Privileged mode covers M-mode only, which is sufficient for NOMMU Linux acting as its own machine-mode runtime. The implemented CSRs are mstatus, mie, mip, mepc, mcause, mtvec, and mscratch. The satp register exists but is ignored: there is no MMU and no address translation. Virtual addresses are physical addresses.
+Privileged mode covers machine mode and user mode. Machine mode alone is not sufficient: the NOMMU port runs the kernel in machine mode but runs userspace in user mode, and distinguishes the two by MPP, so a machine without privilege levels sees every userspace syscall arrive as an environment call from machine mode and panics PID 1 on the first one. Trap entry and return are implemented with mcause, mtval and the MIE and MPIE stacking, along with the rule that machine interrupts are delivered unconditionally while the hart is below machine mode. The implemented CSRs are mstatus, mie, mip, mepc, mcause, mtvec, mscratch and mtval. There is no MMU and no address translation. Virtual addresses are physical addresses.
 
-The CLINT provides mtime and mtimecmp as MMIO registers. The emulator advances mtime by a fixed quantum at the top of each fetch loop iteration. When mtime exceeds mtimecmp and the timer interrupt is enabled in mie and mstatus, the emulator delivers the interrupt before fetching the next instruction. This is the mechanism by which the Linux scheduler receives its timer ticks.
+The CLINT provides mtime and mtimecmp as MMIO registers. The emulator advances mtime by a fixed quantum for every retired instruction and recomputes the machine timer pending bit as a level signal from mtime against mtimecmp. The quantum and the timebase-frequency in the device tree are two halves of one number and must agree, or the kernel's sense of time is wrong by whatever factor separates them and every timeout in it fires at once. This is the mechanism by which the Linux scheduler receives its timer ticks.
 
-The UART is an NS16550-compatible device implemented as four MMIO registers. Writes to the transmit register append to the namespace's output buffer. Reads from the receive register consume bytes from the namespace's input buffer. The kernel uses this for console output and for communication with the process running inside the namespace.
+The UART is an NS16550-compatible device. The transmit register appends to the namespace's output buffer and the receive register consumes from its input ring. The interrupt identity, line control, modem control and scratch registers and the divisor latch are modelled as well, not for their own sake but because the 8250 autoconfiguration path probes them to identify the part, and a device that does not answer is not registered as a console at all.
 
-No other devices are emulated beyond what the networking section describes. No PCI bus, no block device, no interrupt controller beyond the CLINT. The hardware surface is the minimum that NOMMU Linux requires to boot and run a process.
+No other devices are emulated beyond what the networking section describes. No PCI bus, no block device, no interrupt controller beyond the CLINT. One consequence is worth stating plainly, because it is not obvious: with no PLIC, the UART has no interrupt line. A device cannot be wired straight to the hart-local external interrupt, because riscv-intc registers its interrupts as per-CPU devids and request_irq from the 8250 driver fails. The device tree therefore declares no interrupt for the port and the driver runs it timer polled. A PLIC becomes necessary at the NIC controller stage.
 
 
 ## Isolation
 
 Isolation between namespaces is structural. Each namespace has its own private memory slice. There is no shared mutable state between namespaces unless explicitly arranged by the host before launch. A namespace cannot address another namespace's private memory because its address space does not contain it.
 
-The shared region is the only memory visible to all namespaces simultaneously, and it is read-only after launch. A write to it is a fault. The faulting namespace is marked done and its output is discarded. No signal is sent to other namespaces. They do not observe the fault.
+The shared region is the only memory visible to all namespaces simultaneously, and it is read-only after launch. A write to it is a fault. The faulting namespace is marked done and stops, and the emulator records the cause, the faulting address and the program counter so the split can be diagnosed. Its output up to that point is still collected. No signal is sent to other namespaces. They do not observe the fault.
 
 A runaway allocation that exhausts the private heap arena, a stack overflow, a division by zero, an infinite loop: none of these affect any namespace but the one in which they occur. The others finish and their output is collected normally.
 
@@ -66,13 +66,11 @@ This isolation is stronger than what Linux containers provide on a CPU. Containe
 
 ## IO
 
-Input is supplied by the host before the kernel launches. Each namespace receives a pointer to its input slice in the private region. The UART receive path reads from this slice. No synchronization is needed because input is written before launch and read sequentially by one thread.
+Execution is bounded and resumable. A kernel launch retires at most a fixed number of instructions per namespace and returns, and because all machine state lives in device memory across launches, relaunching costs only launch overhead and loses no progress. This is not a refinement, it is what makes a Linux guest observable at all: a booted kernel idling at a shell never terminates, so a run-to-completion model can never see a successful boot, and an unbounded device loop is a hang that the display driver watchdog eventually kills.
 
-Output is accumulated in the namespace's output buffer through the UART transmit path. When a namespace exits cleanly, its output buffer is collected by the host after all threads finish. Collection is ordered by namespace index and is deterministic regardless of how the GPU hardware scheduled the warps.
+Input is a ring per namespace, produced by the cpu and consumed by the guest. Between launches the cpu reads whatever is available on standard input and appends it, then uploads the namespace. When standard input is a terminal it is placed in non-canonical mode and the guest gets a live interactive console, which is how a shell inside a namespace is usable at all. Input is delivered to namespace 0 only. Per-namespace input, which the batch model wants, is not yet implemented.
 
-The output buffer has a fixed maximum size defined at compile time. A namespace that produces more output than the buffer holds receives a transmit failure from the UART. The program inside the namespace observes this as a write error. The behavior at that point is the program's problem.
-
-Streaming output during kernel execution, rather than batch collection at the end, is not supported in the first version. It requires coordination between device and host memory that adds complexity without benefit for the workload Chimera targets: batch execution of one program over many inputs, where collection at the end is the natural model.
+Output is accumulated in the namespace's output buffer through the UART transmit path, and namespace 0 is streamed as the run proceeds. The complete buffer of every namespace is written out in namespace order when the run ends, so batch collection stays deterministic regardless of how the hardware scheduled the warps. The buffer has a fixed maximum size defined at compile time, and a namespace that overruns it currently loses the excess silently, which the transmit path should report instead.
 
 
 ## Networking
@@ -99,9 +97,7 @@ For workloads where every namespace runs the same program over different input d
 
 ## Build Sequence
 
-Chimera is not yet implemented. This document describes the design.
-
-The implementation proceeds in stages, each verifiable before the next begins.
+The implementation proceeds in stages, each verifiable before the next begins. Stages one through four are done and verified by verify.sh. Stage five is partly done and unmeasured. Stage six is not started.
 
 Stage one implements the RV32I decode loop with the register file and private memory model, ignoring privileged mode entirely. A minimal bare-metal test binary assembled with GNU as and linked with a flat linker script runs under this stage and produces correct output. Isolation across N threads is verified by running N instances of the test binary with different input values and confirming N correct independent outputs.
 
@@ -109,28 +105,30 @@ Stage two adds M-mode CSR emulation, the CLINT timer, and interrupt delivery. A 
 
 Stage three adds the NS16550 UART. A bare-metal program that prints through the UART and exits verifies the IO path before the kernel is involved.
 
-Stage four boots NOMMU Linux. The kernel image is built with CONFIG_NOMMU, CONFIG_ARCH_RV32I, and the minimum driver set: the NS16550 UART driver and the CLINT timer driver. A successful boot to a busybox shell prompt in one namespace verifies the emulation layer is correct.
+Stage four boots NOMMU Linux. The kernel image is built with CONFIG_NOMMU, CONFIG_ARCH_RV32I, and the minimum driver set: the NS16550 UART driver and the CLINT timer driver. This is done. Linux 6.6.35 reaches an interactive BusyBox shell in one namespace, on the GPU and on the cpu build, and the two boots are byte identical.
 
-Stage five scales to N namespaces. The shared region holds one kernel image. N private slices hold N independent process states. N namespaces boot simultaneously and each produces correct output. Divergence and occupancy are measured against the single-namespace baseline.
+Stage five scales to N namespaces. N private slices hold N independent machine states, N namespaces boot simultaneously and each produces a complete and identical boot log, which verify.sh checks. What remains is measurement: the wall clock of a boot at one namespace against the same boot at 64 and at 256, and the retired instructions per second implied by each. The claim this project rests on is that the second number is not much worse than the first, and it is not yet established.
 
 Stage six implements the NIC controller threads and the virtio-net MMIO surface. One controller per SM. Intra-SM and inter-SM packet delivery is verified. A namespace that opens a TCP connection to the outside world and receives a response confirms the full network path.
 
 
 ## Hardware
 
-The reference hardware is an RTX 3060 Ti: 38 streaming multiprocessors, 1536 threads per SM in flight simultaneously, 8GB GDDR6 VRAM. Maximum theoretical concurrency is 58368 threads. In practice, register pressure from the emulator state per thread will reduce this. Actual concurrent namespace count is a function of SLICE_SIZE, register spill, and the shared region size, and will be measured rather than predicted.
+The reference hardware is an RTX 3060 Ti: 38 streaming multiprocessors, 1536 threads per SM in flight simultaneously, 8GB GDDR6 VRAM. Maximum theoretical concurrency is 58368 threads. Memory, not threads, is the binding constraint: at the measured 16MB floor of guest RAM per namespace, 8GB holds roughly 450 to 480 slices, so the card runs out of VRAM long before it runs out of lanes. A single GPU thread is also considerably slower at branchy interpretation than a CPU core, so the one namespace case is expected to lose to the cpu build by a wide margin. The architectural claim is about aggregate throughput, and it stands or falls on measurement rather than on this paragraph.
 
 # Licenses
 
 Chimera itself, meaning `chimera.cu`, `tools/mkdtb.c`, `bootstrap.sh`, `run.sh`, `verify.sh`, the tests and the documentation, is Copyright (C) 2026 Ivan Gaydardzhiev and is licensed GPL-3.0-only. The full text is in [COPYING](./COPYING).
 
-Two files under `image/` are not Chimera's work. They are compiled binaries of third party software published alongside the source so that a clone can boot without spending hours in `bootstrap.sh`. They carry their own licenses and their own obligations, and those obligations fall on whoever redistributes this repository.
+Some files under `image/` are not Chimera's work. They are compiled binaries of third party software published alongside the source so that a clone can boot without spending hours in `bootstrap.sh`. They carry their own licenses and their own obligations, and those obligations fall on whoever redistributes this repository. `image/chimera.dtb` is not among them: it is generated by `tools/mkdtb.c` from this repository and is Chimera's own work.
 
 ## Published binaries
 
 `image/kernel.bin` is an unmodified build of the Linux kernel version 6.6.35, licensed GPL-2.0-only, obtained from `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz`. Its sha256 is `ac16a412766714b739f3446c64621ddde4945d512f8ccf27c1a14b68b9ee3326`.
 
 `image/rootfs.cpio.gz` is an initramfs produced by Buildroot 2025.02.15, obtained from `https://buildroot.org/downloads/buildroot-2025.02.15.tar.xz`. Its sha256 is `357ea9726e7ad0fcf7d964f1acb8a44b824eb2bc55a0ae19d87c0e4b3461b72e`. It contains one executable, `bin/busybox`, which is BusyBox 1.37.0 licensed GPL-2.0-only, statically linked against uClibc-ng which is licensed LGPL-2.1-or-later. The remaining entries are symbolic links to that binary, two empty device nodes, and the two shell scripts `etc/inittab` and `etc/init.d/rcS`, which are Chimera's own work and are GPL-3.0-only along with the rest of the repository.
+
+`image/initrd.bin` is a byte-identical copy of `image/rootfs.cpio.gz`, placed at the address the kernel expects by `run.sh pack`. Everything said here about the rootfs applies to it unchanged.
 
 Note that the BusyBox in the published rootfs is 1.37.0, the version Buildroot 2025.02.15 supplies. It is not the 1.36.1 named by the abandoned manual build path described in hacking.md.
 
@@ -140,9 +138,9 @@ GPL-2.0-only section 3 requires that object code be accompanied by the complete 
 
 The scripts used to control compilation are in this repository. [bootstrap.sh](./bootstrap.sh) pins the exact upstream versions and download URLs, writes the kernel configuration to `arch/riscv/configs/chimera_defconfig` and the BusyBox configuration to `chimera-busybox.config` as literal heredocs, and applies every Buildroot configuration change as an explicit edit. Running it reproduces both published binaries from upstream sources with no manual step, and reproduces them from unmodified upstream sources, because neither the kernel nor BusyBox is patched.
 
-The upstream sources are distributed with the binaries rather than referenced. Every release that carries `image/kernel.bin` and `image/rootfs.cpio.gz` also carries the corresponding source as attached assets, unmodified and with their upstream checksums, so that the source travels with the object code it corresponds to. They are attached to the release rather than committed to the tree only because their combined size is two orders of magnitude larger than the rest of the repository.
+Neither binary is patched. Both are ordinary builds of unmodified upstream releases, so the corresponding source is the upstream release itself: `linux-6.6.35.tar.gz` for the kernel, and for the rootfs the BusyBox and uClibc-ng releases that Buildroot 2025.02.15 downloads during the build. The URLs and checksums are given above, `bootstrap.sh` pins the versions, and `make legal-info` in the Buildroot tree reproduces the exact set of source tarballs that went into the image along with a manifest of every component.
 
-For `image/kernel.bin` that is `linux-6.6.35.tar.gz`. For `image/rootfs.cpio.gz` it is the output of `make legal-info` in the Buildroot tree, which collects the source tarball of every package that went into the image, including BusyBox and uClibc-ng, together with the license text of each and a manifest naming the version and license of every component. Buildroot downloads those tarballs during the build rather than carrying them, so the Buildroot release tarball alone is the build system and not the corresponding source of what it produced.
+The source tarballs are not committed to this repository because the kernel release alone is more than an order of magnitude larger than everything else here and exceeds what the hosting platform accepts in a single file.
 
 ## Relinking
 

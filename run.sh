@@ -49,20 +49,24 @@ fmkdtb() {
 }
 
 fpack() {
-	[ -f "${KERNEL_IMAGE}" ] || {
-		printf "kernel image not found: %s\n" "${KERNEL_IMAGE}" >&2
-		exit 1
-	}
-	[ -f "${ROOTFS_CPIO}" ] || {
-		printf "rootfs not found: %s\n" "${ROOTFS_CPIO}" >&2
-		exit 1
-	}
 	[ -f "${DTB_BIN}" ] || {
 		printf "dtb not found, run mkdtb first\n" >&2
 		exit 1
 	}
-	cp "${KERNEL_IMAGE}" "${KERNEL_BIN}"
-	cp "${ROOTFS_CPIO}" "${INITRD_BIN}"
+	if [ -f "${KERNEL_IMAGE}" ]; then
+		cp "${KERNEL_IMAGE}" "${KERNEL_BIN}"
+	elif [ ! -f "${KERNEL_BIN}" ]; then
+		printf "kernel image not found: %s\n" "${KERNEL_IMAGE}" >&2
+		printf "run bootstrap.sh, or publish image/kernel.bin\n" >&2
+		exit 1
+	fi
+	if [ -f "${ROOTFS_CPIO}" ]; then
+		cp "${ROOTFS_CPIO}" "${INITRD_BIN}"
+	elif [ ! -f "${INITRD_BIN}" ]; then
+		printf "rootfs not found: %s\n" "${ROOTFS_CPIO}" >&2
+		printf "run bootstrap.sh, or publish image/rootfs.cpio.gz\n" >&2
+		exit 1
+	fi
 	kernel_size="$(wc -c < "${KERNEL_BIN}" | tr -d ' ')"
 	initrd_size="$(wc -c < "${INITRD_BIN}" | tr -d ' ')"
 	dtb_size="$(wc -c < "${DTB_BIN}" | tr -d ' ')"

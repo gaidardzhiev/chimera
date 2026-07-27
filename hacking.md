@@ -7,7 +7,6 @@ This document describes the repository structure, how to build, and the current 
 - chimera/
  - [readme.md](./readme.md) project overview and architecture
  - [hacking.md](./hacking.md) this file
- - [findings.md](./findings.md) analysis of the defects fixed in the boot series
  - [bootstrap.sh](./bootstrap.sh) builds the cross toolchain and kernel image
  - [chimera.cu](./chimera.cu) the CUDA emulator kernel and both drivers
  - [Makefile](./Makefile) builds chimera via nvcc and chimera-cpu via c++
