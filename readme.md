@@ -120,7 +120,36 @@ Stage six implements the NIC controller threads and the virtio-net MMIO surface.
 
 The reference hardware is an RTX 3060 Ti: 38 streaming multiprocessors, 1536 threads per SM in flight simultaneously, 8GB GDDR6 VRAM. Maximum theoretical concurrency is 58368 threads. In practice, register pressure from the emulator state per thread will reduce this. Actual concurrent namespace count is a function of SLICE_SIZE, register spill, and the shared region size, and will be measured rather than predicted.
 
+# Licenses
 
-## License
+Chimera itself, meaning `chimera.cu`, `tools/mkdtb.c`, `bootstrap.sh`, `run.sh`, `verify.sh`, the tests and the documentation, is Copyright (C) 2026 Ivan Gaydardzhiev and is licensed GPL-3.0-only. The full text is in [COPYING](./COPYING).
 
-Copyright (C) 2026 Ivan Gaydardzhiev. Licensed under GPL-3.0-only.
+Two files under `image/` are not Chimera's work. They are compiled binaries of third party software published alongside the source so that a clone can boot without spending hours in `bootstrap.sh`. They carry their own licenses and their own obligations, and those obligations fall on whoever redistributes this repository.
+
+## Published binaries
+
+`image/kernel.bin` is an unmodified build of the Linux kernel version 6.6.35, licensed GPL-2.0-only, obtained from `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.35.tar.gz`. Its sha256 is `ac16a412766714b739f3446c64621ddde4945d512f8ccf27c1a14b68b9ee3326`.
+
+`image/rootfs.cpio.gz` is an initramfs produced by Buildroot 2025.02.15, obtained from `https://buildroot.org/downloads/buildroot-2025.02.15.tar.xz`. Its sha256 is `357ea9726e7ad0fcf7d964f1acb8a44b824eb2bc55a0ae19d87c0e4b3461b72e`. It contains one executable, `bin/busybox`, which is BusyBox 1.37.0 licensed GPL-2.0-only, statically linked against uClibc-ng which is licensed LGPL-2.1-or-later. The remaining entries are symbolic links to that binary, two empty device nodes, and the two shell scripts `etc/inittab` and `etc/init.d/rcS`, which are Chimera's own work and are GPL-3.0-only along with the rest of the repository.
+
+Note that the BusyBox in the published rootfs is 1.37.0, the version Buildroot 2025.02.15 supplies. It is not the 1.36.1 named by the abandoned manual build path described in hacking.md.
+
+## Corresponding source
+
+GPL-2.0-only section 3 requires that object code be accompanied by the complete corresponding source, which it defines as all the source for all modules the executable contains, plus any associated interface definition files, plus the scripts used to control compilation and installation.
+
+The scripts used to control compilation are in this repository. [bootstrap.sh](./bootstrap.sh) pins the exact upstream versions and download URLs, writes the kernel configuration to `arch/riscv/configs/chimera_defconfig` and the BusyBox configuration to `chimera-busybox.config` as literal heredocs, and applies every Buildroot configuration change as an explicit edit. Running it reproduces both published binaries from upstream sources with no manual step, and reproduces them from unmodified upstream sources, because neither the kernel nor BusyBox is patched.
+
+The upstream sources are distributed with the binaries rather than referenced. Every release that carries `image/kernel.bin` and `image/rootfs.cpio.gz` also carries the corresponding source as attached assets, unmodified and with their upstream checksums, so that the source travels with the object code it corresponds to. They are attached to the release rather than committed to the tree only because their combined size is two orders of magnitude larger than the rest of the repository.
+
+For `image/kernel.bin` that is `linux-6.6.35.tar.gz`. For `image/rootfs.cpio.gz` it is the output of `make legal-info` in the Buildroot tree, which collects the source tarball of every package that went into the image, including BusyBox and uClibc-ng, together with the license text of each and a manifest naming the version and license of every component. Buildroot downloads those tarballs during the build rather than carrying them, so the Buildroot release tarball alone is the build system and not the corresponding source of what it produced.
+
+## Relinking
+
+uClibc-ng is statically linked into `bin/busybox`. LGPL-2.1 section 6 requires that a recipient be able to relink the work against a modified version of the library. That is satisfied here because BusyBox is itself GPL-2.0-only and its complete source, its configuration and the toolchain that built it are all reproducible from `bootstrap.sh`, so the entire binary can be rebuilt rather than merely relinked.
+
+## Aggregation
+
+The GPL-3.0-only emulator and the GPL-2.0-only guest binaries are separate works distributed on the same medium. Chimera does not link against the kernel or against BusyBox, does not derive from either, and does not incorporate any of their code. It executes them as data, the same way a processor does. This is mere aggregation, permitted by GPL-2.0-only section 2 and GPL-3.0-only section 5.
+
+GPL-2.0-only and GPL-3.0-only are not compatible for combining into a single work. Kernel or BusyBox code must therefore never be copied into `chimera.cu` or any other Chimera source file. Emulating an interface is not copying an implementation, and the register layouts and instruction encodings Chimera implements come from the RISC-V specification and the NS16550 datasheet rather than from the Linux drivers for them.
