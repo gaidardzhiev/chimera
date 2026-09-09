@@ -1,17 +1,17 @@
 # Chimera
 
-Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots a NOMMU RV32 Linux kernel image and multiplexes many isolated machine namespaces on top of it, one per CUDA thread. Each namespace has its own register file, its own CSR set, its own private writable memory, its own console and its own output buffer. A configurable read-only prefix of guest RAM is shared across every namespace simultaneously, and a write to it faults the offending namespace and terminates it. The others continue.
+Chimera is a massively parallel RISC-V emulator running on Nvidia GPU hardware. It boots a NOMMU RV32 Linux kernel image and multiplexes many isolated machine namespaces on top of it, one per CUDA thread. Each namespace has its own register file, CSR set, private writable memory, console and output buffer. A configurable read-only prefix of guest RAM is shared across every namespace simultaneously, a write to it faults the offending namespace and terminates it, while the others continue.
 
-Linux 6.6.35 boots to an interactive shell under this emulator, on the CUDA build on an RTX 3060 Ti and on the cpu build. The console is interactive in both. The result is hundreds of structurally isolated Linux machines on one GPU card, each believing it owns the hardware, none of them able to affect any other.
+Linux 6.6.35 boots to an interactive shell under this emulator, on the CUDA build on an RTX 3060 Ti. The result is hundreds of structurally isolated Linux machines on one GPU card, each believing it owns the hardware, none of them able to affect any other in theory.
 
 
 ## The Problem
 
-Linux containers on a CPU share a kernel but isolate process state through namespace and cgroup machinery built into the kernel itself. The isolation is a policy enforced by software. It works, but each container still requires its own kernel scheduler, its own memory allocator context, its own device driver surface. The overhead per container is real and it accumulates.
+Linux containers on a CPU share a kernel but isolate process state through namespace and cgroup machinery built into the kernel itself. The isolation is a policy enforced by software. It works, but each container still requires its own kernel scheduler, memory allocator context, device driver surface so the overhead per container accumulates.
 
 Running thousands of fully isolated environments on one machine today means either thousands of containers with nontrivial per-container overhead, or thousands of virtual machines with even higher overhead. Neither scales to the thread counts a modern GPU makes available.
 
-Chimera approaches the problem differently. The isolation boundary is the emulator, not the kernel. The kernel inside does not know it is being multiplied. It sees one machine. The emulator provides thousands of private address spaces on top of one shared kernel image, and the GPU's own hardware scheduler keeps the execution units busy while individual namespaces stall on memory or block on IO.
+Chimera approaches the problem differently, by puting the isolation boundary in the emulator, not the kernel. The kernel inside does not know it is being multiplied because it sees one machine, and the emulator provides thousands of private address spaces on top of one shared kernel image, and the GPU's own hardware scheduler keeps the execution units busy while individual namespaces stall on memory or block on IO.
 
 
 ## Memory Layout
