@@ -18,7 +18,7 @@ Chimera approaches the problem differently, by puting the isolation boundary in 
 
 VRAM is divided into two regions before the kernel launches.
 
-Guest RAM is one flat window at 0x80000000 of RAM_SIZE bytes, exactly as a real machine presents it. The window is split at RO_SIZE. Everything below the split is the shared region, read only, one copy for the whole card. Everything at or above it is the namespace's private slice, mapped into the guest address space at its natural address rather than at zero, so that the kernel's own data and bss land in private memory without the kernel knowing anything has been divided.
+Guest RAM is one flat window at 0x80000000 of RAM_SIZE bytes, exactly as a real machine presents it. The window is split at RO_SIZE, everything below the split is the shared region, read only, one copy for the whole card. Everything at or above it is the namespace's private slice, mapped into the guest address space at its natural address rather than at zero, so that the kernel's own data and bss land in private memory without the kernel knowing anything has been divided.
 
     guest physical:
     [ 0x80000000                shared RO, RO_SIZE bytes       ]
@@ -31,11 +31,11 @@ Guest RAM is one flat window at 0x80000000 of RAM_SIZE bytes, exactly as a real 
     [ private slice: ns 2       ...                            ]
     [ NIC controller 0..M       fixed region, not implemented  ]
 
-The cpu uploads one RAM template holding the kernel, the initramfs and the device tree, and a device kernel fills every private slice from it. The cpu never allocates guest memory per namespace. Reads from the shared region require no synchronization. Writes to it are caught by a range check in the memory access path and fault the namespace immediately, recording the faulting address and program counter.
+The CPU uploads one RAM template holding the kernel, the initramfs and the device tree, and a device kernel fills every private slice from it. It never allocates guest memory per namespace. Reads from the shared region require no synchronization, writes to it are caught by a range check in the memory access path and fault the namespace immediately, recording the faulting address and program counter.
 
-RO_SIZE defaults to zero, which gives each namespace a complete private copy and shares nothing. That is what the Linux boot is verified with. Raising it to the offset of the kernel's _etext shares the kernel text, which is genuinely read-only after the image is built, provided alternatives patching is disabled and the init sections that free_initmem writes to stay above the split.
+`RO_SIZE` defaults to zero, which gives each namespace a complete private copy and shares nothing. That is what the Linux boot is verified with. Raising it to the offset of the kernel's `_etext` shares the kernel text, which is genuinely read-only after the image is built, provided alternatives patching is disabled and the init sections that `free_initmem` writes to stay above the split.
 
-The honest arithmetic is less favourable than it first appears. The kernel reports 1479K of code against 290K of rwdata, 200K of rodata, 131K of init and 107K of bss, and the initramfs is unpacked into tmpfs inside the private slice rather than executed in place, so it costs every namespace a second time. Sharing the kernel text therefore recovers under ten percent of a slice. Booting at decreasing RAM_SIZE puts the floor for this rootfs at 16MB: 24MB and 16MB reach a shell, 12MB does not, and 10MB panics with no working init. On 8GB that is roughly 450 to 480 namespaces rather than thousands. Making the sharing significant means replacing the initramfs with a read-only root held in the shared region and executed in place, which is a root filesystem and kernel configuration change rather than an emulator change.
+The honest arithmetic is less favourable than it first appeard... The kernel reports 1479K of code against 290K of rwdata, 200K of rodata, 131K of init and 107K of bss, and the initramfs is unpacked into tmpfs inside the private slice rather than executed in place, so it costs every namespace a second time. Sharing the kernel text therefore recovers under ten percent of a slice. Booting at decreasing `RAM_SIZE` puts the floor for this rootfs at 16MB: 24MB and 16MB reach a shell, 12MB does not, and 10MB panics with no working init. On 8GB that is roughly 450 to 480 namespaces rather than thousands. Making the sharing significant means replacing the initramfs with a read-only root held in the shared region and executed in place, which is a root filesystem and kernel configuration change rather than an emulator change.
 
 
 ## Emulated Hardware
